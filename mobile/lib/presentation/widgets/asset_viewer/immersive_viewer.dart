@@ -446,15 +446,16 @@ class ImmersiveAssetResolver {
   /// does not open throws a [RawVideoUnsupportedException].
   ///
   /// A flat 3D media, as its file name tells (see [flatStereoFormatOf]), opens from the same file with its
-  /// [ImmersiveRequest.flatFormat]: the viewer shows it on a flat screen, the sphere view tells it nothing.
-  Future<ImmersiveRequest> resolve(BaseAsset asset, {String? localPath}) async {
+  /// [ImmersiveRequest.flatFormat]: the viewer shows it on a flat screen, the sphere view tells it nothing. So does a
+  /// regular photo or video with [flat2d], as [FlatStereoFormat.mono].
+  Future<ImmersiveRequest> resolve(BaseAsset asset, {String? localPath, bool flat2d = false}) async {
     final raw = this.raw;
     final rawKind = raw?.kindOf(asset);
     if (raw != null && rawKind != null && !asset.isVideo) {
       return raw.assetPhoto(asset, localFile: await _rawPhotoFile(asset, localPath));
     }
     final remoteUrl = immersiveMediaUrl(asset);
-    final flat = flatStereoFormatOf(asset);
+    final flat = flatStereoFormatOf(asset) ?? (flat2d ? FlatStereoFormat.mono : null);
     // A photo on the server opens from its original there
     final localId = asset.isVideo || remoteUrl == null ? asset.localId : null;
     SphereView view({Rect? gpanoCrop, SphericalProbe? probe}) => resolveSphereView(
@@ -631,12 +632,14 @@ class ImmersiveAssetResolver {
 ///
 /// [stereoPair] opens [asset], an Apple spatial photo, with both its eyes (see
 /// [ImmersiveAssetResolver.resolveStereoPhoto]); previous and next lead from there as from any other media.
+/// [flat2d] opens a regular photo or video on the flat screen (see [FlatStereoFormat.mono]).
 Future<void> openImmersiveViewer(
   WidgetRef ref,
   BaseAsset asset, {
   required Map<String, String> stereoLabels,
   void Function(VideoSourceNotice notice)? onSourceNotice,
   HeicStereoPair? stereoPair,
+  bool flat2d = false,
 }) async {
   // Read before the first await: the viewer may be gone by then
   final resolver = ImmersiveAssetResolver.read(ref, stereoLabels: stereoLabels);
@@ -666,7 +669,7 @@ Future<void> openImmersiveViewer(
   try {
     final request = stereoPair != null
         ? await resolver.resolveStereoPhoto(asset, stereoPair)
-        : await resolver.resolve(asset, localPath: viewIntentPath);
+        : await resolver.resolve(asset, localPath: viewIntentPath, flat2d: flat2d);
     final notice = request.sourceNotice;
     if (notice != null) {
       onSourceNotice?.call(notice);
@@ -682,6 +685,7 @@ Future<void> openImmersiveViewer(
       equirectangularRemoteIds: remoteAssets.equirectangularRemoteIds,
       jump: jump,
       player: player,
+      showFlat2d: true,
     );
     openingId = session.start(navigator);
     await resolver.open(request, openingId: openingId, startPosition: startPosition);
@@ -763,12 +767,12 @@ Future<void> openImmersiveUrl(
 /// correction of the user is remembered
 typedef _ShownAsset = ({BaseAsset asset, ImmersiveRequest request, int? index, SphereCoverage coverage});
 
-/// Previous and next among the assets of a timeline, for the immersive viewer opened from the asset viewer (see
-/// [openImmersiveViewer]). It skips the assets the viewer would show neither as 360° nor as flat 3D media (see
-/// [isImmersiveCandidate] and [flatStereoFormatOf]): any
-/// asset of the 360° timeline; elsewhere those the user chose to view as 360°, those whose file on the device declares
-/// it ([forced] and [localIds], as they were when the viewer opened), and those the server flags (looked up with
-/// [equirectangularRemoteIds], a chunk at a time).
+/// Previous and next among the photos and videos of a timeline, for the immersive viewer opened from the asset viewer
+/// (see [openImmersiveViewer]). The 360° ones show on the sphere (see [isImmersiveCandidate]): any asset of the 360°
+/// timeline; elsewhere those the user chose to view as 360°, those whose file on the device declares it ([forced] and
+/// [localIds], as they were when the viewer opened), and those the server flags (looked up with
+/// [equirectangularRemoteIds], a chunk at a time). The flat 3D ones (see [flatStereoFormatOf]) show on the flat screen,
+/// and so do the regular ones (see [FlatStereoFormat.mono]) with [showFlat2d], which are skipped otherwise.
 ///
 /// The coverage the user picked in the viewer for an asset is remembered (see [SphereCoverageOverrides.remember]) when
 /// the viewer moves on from it and when it closes on it. Once it closes, the asset viewer ([jump]) shows the asset it
@@ -793,6 +797,7 @@ class TimelineImmersiveNavigator implements ImmersiveNavigator {
     required this._equirectangularRemoteIds,
     this._jump,
     this._player,
+    this.showFlat2d = false,
   }) : _start = (asset: asset, request: request, index: index, coverage: request.view.coverage),
        _current = (asset: asset, request: request, index: index, coverage: request.view.coverage);
 
@@ -801,6 +806,9 @@ class TimelineImmersiveNavigator implements ImmersiveNavigator {
 
   final ImmersiveAssetResolver _resolver;
   final TimelineService _timeline;
+
+  /// Whether the regular photos and videos show too, on the flat screen in 2D
+  final bool showFlat2d;
   final Set<String> _forced;
   final Set<String> _localIds;
   final Future<Set<String>> Function(Iterable<String> remoteIds) _equirectangularRemoteIds;
@@ -813,6 +821,8 @@ class TimelineImmersiveNavigator implements ImmersiveNavigator {
   // The raw videos found not to open while this viewer is open (the other file of a pair missing, a layout this device
   // does not play), by asset key: the searches skip them without resolving them again
   final _unplayable = <String>{};
+  // The regular photos and videos the searches found, by asset key: shown on the flat screen in 2D
+  final _flat2d = <String>{};
 
   /// The asset the viewer shows, as far as this navigator knows
   BaseAsset get currentAsset => _current.asset;
@@ -861,7 +871,7 @@ class TimelineImmersiveNavigator implements ImmersiveNavigator {
       from = found.index;
       final ImmersiveRequest resolved;
       try {
-        resolved = await _resolver.resolve(found.item);
+        resolved = await _resolver.resolve(found.item, flat2d: _flat2d.contains(spatialLayoutKey(found.item)));
       } on RawVideoUnsupportedException catch (error) {
         // No message in the headset: the search goes on in the same direction, and leaves it out from now on
         _log.info('Skipping ${found.item.name} in the immersive viewer: $error');
@@ -927,23 +937,22 @@ class TimelineImmersiveNavigator implements ImmersiveNavigator {
   }
 
   Future<List<bool>> _areCapable(List<BaseAsset> assets) async {
-    // A raw file is shown stitched, unless it was found not to open
-    bool isCapable(BaseAsset asset, [Set<String> equirectangularIds = const {}]) =>
-        !_unplayable.contains(spatialLayoutKey(asset)) &&
-        (isImmersiveCandidate(
-              asset,
-              all360: _all360,
-              forced: _forced,
-              localIds: _localIds,
-              equirectangularIds: equirectangularIds,
-            ) ||
-            _resolver.raw?.kindOf(asset) != null ||
-            flatStereoFormatOf(asset) != null);
+    // On the sphere or in 3D on the flat screen; a raw file is shown stitched
+    bool isImmersive(BaseAsset asset, [Set<String> equirectangularIds = const {}]) =>
+        isImmersiveCandidate(
+          asset,
+          all360: _all360,
+          forced: _forced,
+          localIds: _localIds,
+          equirectangularIds: equirectangularIds,
+        ) ||
+        _resolver.raw?.kindOf(asset) != null ||
+        flatStereoFormatOf(asset) != null;
 
     // Only the assets that nothing at hand tells are asked to the database, all at once
     final remoteIds = {
       for (final asset in assets)
-        if ((asset.isImage || asset.isVideo) && !isCapable(asset)) ?asset.remoteId,
+        if ((asset.isImage || asset.isVideo) && !isImmersive(asset)) ?asset.remoteId,
     };
     var flagged = const <String>{};
     if (remoteIds.isNotEmpty) {
@@ -953,7 +962,24 @@ class TimelineImmersiveNavigator implements ImmersiveNavigator {
         _log.warning('Could not tell which assets the server flags as 360°', error, stackTrace);
       }
     }
-    return [for (final asset in assets) isCapable(asset, flagged)];
+    final capable = <bool>[];
+    for (final asset in assets) {
+      final key = spatialLayoutKey(asset);
+      // A raw video found not to open is skipped
+      if (!(asset.isImage || asset.isVideo) || _unplayable.contains(key)) {
+        capable.add(false);
+      } else if (isImmersive(asset, flagged)) {
+        _flat2d.remove(key);
+        capable.add(true);
+      } else {
+        // Neither 360° nor flat 3D: a regular one, on the flat screen in 2D
+        if (showFlat2d) {
+          _flat2d.add(key);
+        }
+        capable.add(showFlat2d);
+      }
+    }
+    return capable;
   }
 
   @override
@@ -1041,9 +1067,10 @@ typedef ImmersiveFolderItem = ({NetworkEntry entry, Uri url});
 /// Previous and next among the photos and videos of a share folder, [items] in the order the browser lists them, for
 /// the immersive viewer opened with [request] on the one at [index], from a network page (see [openImmersiveUrl]).
 ///
-/// It skips the files that declare no 360° projection (see [NetworkMediaService.detect]), except the one it opened on:
-/// the user chose to view that one as 360° whatever it declares, and it shows again as it opened, with what the page
-/// guessed from its frame size. What a file declares is read once: the files the browser or an earlier search read
+/// The files that declare a 360° projection (see [NetworkMediaService.detect]) show on the sphere, the flat 3D ones
+/// (see [flatShareFormat]) on the flat screen, and with [showFlat2d] any other one too, in 2D (see
+/// [FlatStereoFormat.mono]), a file that could not be read in time included; they are skipped otherwise. The one it
+/// opened on shows again as it opened, with what the page guessed from its frame size. What a file declares is read once: the files the browser or an earlier search read
 /// answer from memory, the others are read through the media bridge with [client], one by one, for [fileTimeout] at
 /// most each.
 ///
@@ -1066,6 +1093,7 @@ class FolderImmersiveNavigator implements ImmersiveNavigator {
     this.fileTimeout = immersiveFolderFileTimeout,
     this._raw,
     this._connections,
+    this.showFlat2d = false,
   }) : _items = List.unmodifiable(items),
        _start = index,
        _startRequest = request,
@@ -1088,10 +1116,14 @@ class FolderImmersiveNavigator implements ImmersiveNavigator {
     player: player,
     raw: RawImmersiveMedia.read(ref, forAssets: false),
     connections: ref.read(networkConnectionsProvider),
+    showFlat2d: true,
   );
 
   /// Longest wait for what a file declares, see [immersiveFolderFileTimeout]
   final Duration fileTimeout;
+
+  /// Whether the regular photos and videos show too, on the flat screen in 2D
+  final bool showFlat2d;
 
   final ImmersiveApi _api;
   final NetworkMediaService _service;
@@ -1146,8 +1178,8 @@ class FolderImmersiveNavigator implements ImmersiveNavigator {
           if (info != null && info.is360) {
             return _mayShow(entry, info);
           }
-          // A flat 3D file by its name, unless it declares 360°: shown on a flat screen
-          return flat != null;
+          // A flat 3D file by its name, unless it declares 360°, and with showFlat2d any other file: on a flat screen
+          return flat != null || showFlat2d;
         },
         limit: budget,
         isCancelled: () => request.isCancelled,
@@ -1209,7 +1241,8 @@ class FolderImmersiveNavigator implements ImmersiveNavigator {
   Future<ImmersiveRequest> _requestFor(ImmersiveFolderItem item, NetworkMediaInfo info) async {
     final raw = _raw;
     if (raw == null || info.rawKind == null || flatShareFormat(item.entry, is360: info.is360) != null) {
-      return folderImmersiveRequest(item, info);
+      // Found by the search: a file that declares no 360° projection is a regular one
+      return folderImmersiveRequest(item, info, flat2d: showFlat2d && !info.is360);
     }
     return raw.sharedMedia(
       item.entry,
@@ -1279,9 +1312,18 @@ class FolderImmersiveNavigator implements ImmersiveNavigator {
 /// What the immersive viewer opens for [item], a file of a share whose file declares [info]: its layout and coverage
 /// from what it declares and its name (see [NetworkMediaInfo.sphereView]), its frame size being unknown until a
 /// player reads it. A flat 3D file (see [flatShareFormat]) opens on a flat screen instead, with its flat format;
-/// [width] and [height], when the page knows them, tell squeezed eyes of a video apart.
-ImmersiveRequest folderImmersiveRequest(ImmersiveFolderItem item, NetworkMediaInfo info, {int? width, int? height}) {
-  final flat = flatShareFormat(item.entry, is360: info.is360, width: width, height: height);
+/// [width] and [height], when the page knows them, tell squeezed eyes of a video apart. With [flat2d], any other file
+/// opens on the flat screen too, in 2D (see [FlatStereoFormat.mono]).
+ImmersiveRequest folderImmersiveRequest(
+  ImmersiveFolderItem item,
+  NetworkMediaInfo info, {
+  int? width,
+  int? height,
+  bool flat2d = false,
+}) {
+  final flat =
+      flatShareFormat(item.entry, is360: info.is360, width: width, height: height) ??
+      (flat2d ? FlatStereoFormat.mono : null);
   return ImmersiveRequest(
     url: item.url.toString(),
     isVideo: item.entry.isVideo,

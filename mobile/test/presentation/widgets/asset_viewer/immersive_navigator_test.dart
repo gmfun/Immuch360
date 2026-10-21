@@ -62,6 +62,9 @@ class _RecordingImmersiveApi extends ImmersiveApi {
   /// The transcoded stream given with each media shown, null for none
   final shownFallbackUrls = <String?>[];
 
+  /// The flat format given with each media shown, null for one on the sphere
+  final shownFlatFormats = <String?>[];
+
   /// What the viewer answers when asked to show a media: false once it no longer waits for the request
   bool answer = true;
 
@@ -96,6 +99,7 @@ class _RecordingImmersiveApi extends ImmersiveApi {
     String? flatFormat,
   ) async {
     shownFallbackUrls.add(fallbackUrl);
+    shownFlatFormats.add(flatFormat);
     shown.add((
       requestId: requestId,
       url: url,
@@ -297,6 +301,7 @@ void main() {
       Set<String> localIds = const {},
       VideoPlayerNotifier? player,
       String? fallbackUrl,
+      bool showFlat2d = false,
     }) {
       final asset = assets[index];
       final navigator = TimelineImmersiveNavigator(
@@ -320,12 +325,29 @@ void main() {
         },
         jump: jump,
         player: player,
+        showFlat2d: showFlat2d,
       );
       openingId = session.start(navigator);
       return navigator;
     }
 
     String originalOf(String id) => '$_server/assets/$id/original?edited=true';
+
+    test('with showFlat2d, shows the regular assets too, on the flat screen in 2D', () async {
+      flagged = {'a3'};
+      final navigator = open(1, showFlat2d: true);
+
+      expect(await request(1), isTrue);
+      expect(api.shown.last.url, originalOf('a2'));
+      expect(api.shownFlatFormats.last, 'mono');
+      expect(await request(1), isTrue);
+      expect(api.shown.last.url, originalOf('a3'));
+      expect(api.shownFlatFormats.last, isNull, reason: 'a 360° asset stays on the sphere');
+      expect(await request(-1), isTrue);
+      expect(api.shown.last.url, originalOf('a2'));
+      expect(api.shownFlatFormats.last, 'mono');
+      expect(navigator.currentAsset, assets[2]);
+    });
 
     test('shows the nearest 360° asset each way in place, asking the database once per chunk', () async {
       flagged = {'a4', 'a7'};
@@ -786,6 +808,7 @@ void main() {
       SphereView view = _fullSphere,
       Duration fileTimeout = const Duration(seconds: 5),
       RawImmersiveMedia? raw,
+      bool showFlat2d = false,
     }) {
       final all = items();
       final item = all[index];
@@ -804,10 +827,28 @@ void main() {
         player: player,
         fileTimeout: fileTimeout,
         raw: raw,
+        showFlat2d: showFlat2d,
       );
       openingId = session.start(navigator);
       return navigator;
     }
+
+    test('with showFlat2d, shows the files that declare nothing too, on the flat screen in 2D', () async {
+      open(1, showFlat2d: true);
+
+      expect(await request(1), isTrue);
+      expect(api.shown.last.url, urlOf('/c.mp4'));
+      expect(api.shown.last.isVideo, isTrue);
+      expect(api.shownFlatFormats.last, 'mono');
+      expect(await request(1), isTrue);
+      expect(api.shown.last.url, urlOf('/d.jpg'));
+      expect(api.shownFlatFormats.last, isNull, reason: 'a 360° file stays on the sphere');
+      expect(await request(-1), isTrue);
+      expect(await request(-1), isTrue, reason: 'b_vr180.jpg, the one it opened on');
+      expect(await request(-1), isTrue);
+      expect(api.shown.last.url, urlOf('/a.jpg'));
+      expect(api.shownFlatFormats.last, 'mono');
+    });
 
     test('shows the nearest file that declares a 360° projection each way, through the media bridge', () async {
       final navigator = open(0);

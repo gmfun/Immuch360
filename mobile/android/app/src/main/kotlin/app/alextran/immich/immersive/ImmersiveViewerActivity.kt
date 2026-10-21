@@ -173,7 +173,8 @@ private const val RAW_PROJECTION_TAG = "RawProjection"
  * depth side by side) gets both eyes made from its depth ([FlatStereo.synthesizeEyes]). A video plays on a flat video
  * layer in front of the user instead of the sphere, whose stereo mode gives each eye its half of the frame (see
  * [applyFlatVideoShape]); the 3D button switches it to the first eye for both. The left thumbstick brings the screen in
- * front of the gaze again.
+ * front of the gaze again. A regular photo or video comes as [FlatFormat.MONO], on the same screen, its whole frame for
+ * both eyes: larger than in the 2D window, and never cropped.
  */
 class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listener {
   private data class MediaRequest(
@@ -827,7 +828,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     if (media.isRawVideo) Log.i(TAG, "raw 360 video, stitched on the headset")
     when {
       media.flatFormat != null ->
-        Log.i(TAG, "flat 3D ${if (media.isVideo) "video" else "photo"}, ${media.flatFormat} on a flat screen")
+        Log.i(TAG, "flat ${if (media.isVideo) "video" else "photo"}, ${media.flatFormat} on a flat screen")
       media.isStereoPhoto -> Log.i(TAG, "spatial photo, on the stereo quad: ${media.stereoPair ?: "pair unreadable"}")
     }
     titleView?.text = media.title
@@ -2021,7 +2022,11 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
             val plane = rgbdPlane
             decodeMutex.withLock {
               withContext(Dispatchers.Default) {
-                holder.set(if (flat != null) decodeFlat(bytes, flat, strength, plane) else decodeStereo(bytes, spec))
+                // A 2D photo is the left eye alone, as a spatial photo without its pair
+                holder.set(
+                  if (flat != null && flat != FlatFormat.MONO) decodeFlat(bytes, flat, strength, plane)
+                  else decodeStereo(bytes, spec)
+                )
               }
             }
             ensureActive()
@@ -3335,7 +3340,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     if (media.isFlatVideo) {
       // A new flat video starts in 3D, at 16:9 until the player tells its frame size, in front of the user
       stereo3d = true
-      stereoHasSecondEye = media.flatFormat != FlatFormat.RGBD
+      stereoHasSecondEye = media.flatFormat?.let(FlatStereo::hasSecondEye) ?: true
       flatVideoSize = null
       applyFlatVideoShape()
       placeFlatVideo()

@@ -20,7 +20,11 @@ enum FlatStereoFormat {
   halfTb('halfTb'),
 
   /// A photo: its color on the left half, its depth on the right half (white near, black far)
-  rgbd('rgbd');
+  rgbd('rgbd'),
+
+  /// A regular photo or video, the whole frame for both eyes: on the flat screen of the headset it shows larger than
+  /// in the 2D window, and whole. Never guessed from a name: the viewer asks for it.
+  mono('mono');
 
   const FlatStereoFormat(this.wire);
 

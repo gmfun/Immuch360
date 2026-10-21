@@ -6,14 +6,16 @@ import kotlin.math.roundToInt
 /**
  * How a flat 3D media packs its eyes, as Flutter names it in the flatFormat of ImmersiveApi.open (see
  * guessFlatStereoFormat on the Flutter side): side by side or top and bottom, with eyes at the aspect of their half of
- * the frame or squeezed into it, or a photo with its color on the left and its depth on the right (RGBD).
+ * the frame or squeezed into it, or a photo with its color on the left and its depth on the right (RGBD). A regular
+ * photo or video is [MONO]: the whole frame for both eyes, on the same screen, for a view larger than the 2D window.
  */
 internal enum class FlatFormat(val wire: String) {
   SBS("sbs"),
   HALF_SBS("halfSbs"),
   TB("tb"),
   HALF_TB("halfTb"),
-  RGBD("rgbd");
+  RGBD("rgbd"),
+  MONO("mono");
 
   companion object {
     /** The format Flutter sent as [wire], null for none or for one this viewer does not know (a newer Flutter side). */
@@ -61,12 +63,15 @@ internal object FlatStereo {
     return if (tenths % 10 == 0) "${tenths / 10}%" else "${tenths / 10}.${tenths % 10}%"
   }
 
+  /** Whether a media packed as [format] has an eye of its own for each eye: not an RGBD photo, nor a 2D media. */
+  fun hasSecondEye(format: FlatFormat): Boolean = format != FlatFormat.RGBD && format != FlatFormat.MONO
+
   /** Depth of an RGBD photo that stays on the screen plane, 0 far to 1 near: what is nearer comes out of it. */
   const val RGBD_SCREEN_PLANE = 0.5f
 
   /**
    * The left and the right eye of a [width] x [height] frame packed as [format]; for an RGBD photo its color and its
-   * depth. An odd side leaves its last column or row out.
+   * depth, for a [FlatFormat.MONO] media the whole frame twice. An odd side leaves its last column or row out.
    */
   fun eyes(format: FlatFormat, width: Int, height: Int): Pair<Region, Region> =
     when (format) {
@@ -81,6 +86,7 @@ internal object FlatStereo {
         val half = height / 2
         Region(0, 0, width, half) to Region(0, half, width, half)
       }
+      FlatFormat.MONO -> Region(0, 0, width, height).let { it to it }
     }
 
   /**
@@ -96,7 +102,8 @@ internal object FlatStereo {
       FlatFormat.RGBD -> frame / 2f
       FlatFormat.TB -> frame * 2f
       FlatFormat.HALF_SBS,
-      FlatFormat.HALF_TB -> frame
+      FlatFormat.HALF_TB,
+      FlatFormat.MONO -> frame
     }
   }
 
@@ -117,7 +124,7 @@ internal object FlatStereo {
 
   /**
    * The stereo mode of the flat video layer: each eye its half of the frame in 3D, the left (or top) eye for both in
-   * 2D. An RGBD frame has no second eye: its color half for both.
+   * 2D. An RGBD frame has no second eye: its color half for both; a [FlatFormat.MONO] one the whole frame for both.
    */
   fun stereoModeFor(format: FlatFormat, threeD: Boolean): StereoMode =
     when (format) {
@@ -126,6 +133,7 @@ internal object FlatStereo {
       FlatFormat.TB,
       FlatFormat.HALF_TB -> if (threeD) StereoMode.UpDown else StereoMode.MonoUp
       FlatFormat.RGBD -> StereoMode.MonoLeft
+      FlatFormat.MONO -> StereoMode.None
     }
 
   /**

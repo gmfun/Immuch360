@@ -3,7 +3,9 @@ package app.alextran.immich.immersive
 import com.meta.spatial.runtime.StereoMode
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Flat 3D media: the eyes of a frame, their shape, and the eyes of an RGBD photo. */
@@ -20,6 +22,7 @@ class FlatStereoTest {
     assertEquals(FlatFormat.TB, FlatFormat.parse("tb"))
     assertEquals(FlatFormat.HALF_TB, FlatFormat.parse("halfTb"))
     assertEquals(FlatFormat.RGBD, FlatFormat.parse("rgbd"))
+    assertEquals(FlatFormat.MONO, FlatFormat.parse("mono"))
     assertNull(FlatFormat.parse(null))
     assertNull(FlatFormat.parse("mvhevc"))
   }
@@ -34,6 +37,18 @@ class FlatStereoTest {
     val tb = FlatStereo.eyes(FlatFormat.HALF_TB, 1920, 1080)
     assertEquals(FlatStereo.Region(0, 0, 1920, 540), tb.first)
     assertEquals(FlatStereo.Region(0, 540, 1920, 540), tb.second)
+  }
+
+  @Test
+  fun `a 2D media shows its whole frame to both eyes`() {
+    val (left, right) = FlatStereo.eyes(FlatFormat.MONO, 4000, 3000)
+    assertEquals(FlatStereo.Region(0, 0, 4000, 3000), left)
+    assertEquals(left, right)
+    assertEquals(4f / 3f, FlatStereo.eyeAspect(FlatFormat.MONO, 4000, 3000), 1e-4f)
+    assertEquals(StereoMode.None, FlatStereo.stereoModeFor(FlatFormat.MONO, threeD = true))
+    assertFalse(FlatStereo.hasSecondEye(FlatFormat.MONO))
+    assertFalse(FlatStereo.hasSecondEye(FlatFormat.RGBD))
+    assertTrue(FlatStereo.hasSecondEye(FlatFormat.SBS))
   }
 
   @Test

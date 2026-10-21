@@ -126,6 +126,15 @@ class ViewerTopAppBar extends ConsumerWidget implements PreferredSizeWidget {
             // On the headset, the 360° opener goes to the immersive viewer, which takes the flat format from the name
             onPressed: () => unawaited(open360View(context, ref, asset)),
           )
+        : isHorizonOs && stereoPair == null && !hasPanoramaView && (asset.isImage || asset.isVideo)
+        // Any other photo or video: on the flat screen of the headset, larger than this window shows it and whole,
+        // where previous and next go through all the photos and videos
+        ? IconButton(
+            key: const Key('flat_screen_view'),
+            icon: const Icon(Icons.fit_screen_rounded),
+            tooltip: context.t.immersive_view_big_screen,
+            onPressed: () => unawaited(openFlatScreenView(context, ref, asset)),
+          )
         : null;
 
     // Immuch360 Desktop: the window in full screen (lib/desktop/window/full_screen.dart)

@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:auto_route/auto_route.dart';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
@@ -149,33 +148,28 @@ class _AssetViewerState extends ConsumerState<AssetViewer> {
   /// "Paused: the arrows go to the previous or next item" shows once per opening of the viewer
   bool _pausedHintShown = false;
 
-  /// A sideways thumbstick push of a Meta Quest controller, which a 2D app receives as a horizontal scroll: one push is
-  /// one page, the next one counts once the scroll has stopped for [_stickScrollRearm] (see [_onStickScroll])
-  Timer? _stickScrollTimer;
-  bool _stickScrollUsed = false;
-  static const _stickScrollRearm = Duration(milliseconds: 300);
+  /// The sideways thumbstick pushes of a Meta Quest controller, one "page" call per push (see QuestStickPaging.kt):
+  /// taken natively, the scrollables of the page would compete for them as pointer scrolls
+  static const _stickChannel = MethodChannel('immuch360/quest_stick');
 
-  /// A horizontal scroll on Android goes to the previous or next page at once, as an arrow key does, rather than
-  /// dragging the page a few pixels that snap back: the thumbstick of a Meta Quest controller scrolls a 2D app.
-  /// Claimed before the PageView, which would take it otherwise (the page is deeper, so it registers first). A zoomed
-  /// photo keeps the scroll, and a mostly vertical one is left alone.
-  void _onStickScroll(PointerSignalEvent event) {
-    if (event is! PointerScrollEvent || ref.read(assetViewerProvider).isZoomed) {
+  void _setStickPaging(bool enabled) {
+    if (!CurrentPlatform.isAndroid) {
       return;
     }
-    final delta = event.scrollDelta;
-    if (delta.dx == 0 || delta.dx.abs() < delta.dy.abs()) {
+    _stickChannel.setMethodCallHandler(enabled ? _onStickPage : null);
+    // An engine without MainActivity has no such channel: no thumbstick paging there
+    _stickChannel.invokeMethod<void>('setPaging', enabled).ignore();
+  }
+
+  /// A push to the right goes to the next asset, to the left to the previous one; a zoomed photo stays
+  Future<void> _onStickPage(MethodCall call) async {
+    if (call.method != 'page' || !mounted || ref.read(assetViewerProvider).isZoomed) {
       return;
     }
-    GestureBinding.instance.pointerSignalResolver.register(event, (_) {
-      _stickScrollTimer?.cancel();
-      _stickScrollTimer = Timer(_stickScrollRearm, () => _stickScrollUsed = false);
-      if (_stickScrollUsed) {
-        return;
-      }
-      _stickScrollUsed = true;
-      _onTapNavigate(delta.dx > 0 ? 1 : -1);
-    });
+    final step = call.arguments;
+    if (step is int && step != 0) {
+      _onTapNavigate(step.sign);
+    }
   }
 
   void _onTapNavigate(int direction) {
@@ -256,6 +250,7 @@ class _AssetViewerState extends ConsumerState<AssetViewer> {
     _bottomBarFocus.addListener(_onBarsFocus);
 
     WidgetsBinding.instance.addPostFrameCallback(_onAssetInit);
+    _setStickPaging(true);
 
     final assetViewer = ref.read(assetViewerProvider);
     unawaited(_setSystemUIMode(assetViewer.showingControls, assetViewer.showingDetails));
@@ -263,7 +258,7 @@ class _AssetViewerState extends ConsumerState<AssetViewer> {
 
   @override
   void dispose() {
-    _stickScrollTimer?.cancel();
+    _setStickPaging(false);
     _jump._detach(this);
     _topBarFocus.removeListener(_onBarsFocus);
     _bottomBarFocus.removeListener(_onBarsFocus);
@@ -652,10 +647,8 @@ class _AssetViewerState extends ConsumerState<AssetViewer> {
                       ? const FastScrollPhysics()
                       : const FastClampingScrollPhysics(),
                   itemCount: _totalAssets,
-                  itemBuilder: (context, index) => Listener(
-                    onPointerSignal: CurrentPlatform.isAndroid ? _onStickScroll : null,
-                    child: AssetPage(index: index, heroOffset: _heroOffset, onTapNavigate: _onTapNavigate),
-                  ),
+                  itemBuilder: (context, index) =>
+                      AssetPage(index: index, heroOffset: _heroOffset, onTapNavigate: _onTapNavigate),
                 ),
               ),
             ),

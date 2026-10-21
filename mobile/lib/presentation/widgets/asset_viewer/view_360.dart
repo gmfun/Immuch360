@@ -52,11 +52,17 @@ Future<void> open360View(BuildContext context, WidgetRef ref, BaseAsset asset) a
   }
 }
 
+/// Opens [asset], a regular photo or video, on the flat screen of the immersive viewer of a Meta Quest (see
+/// [FlatStereoFormat.mono]): larger than the 2D window shows it, and whole, with previous and next among all the
+/// photos and videos of the timeline. Returns once the viewer is open, or could not open.
+Future<void> openFlatScreenView(BuildContext context, WidgetRef ref, BaseAsset asset) =>
+    _openImmersive(context, ref, asset, flat2d: true);
+
 /// Tells the user why the raw video of [error] does not open in 360° (see [rawVideoUnsupportedMessage])
 void showRawVideoUnsupported(ScaffoldMessengerState? messenger, Translations t, RawVideoUnsupportedException error) =>
     messenger?.showSnackBar(SnackBar(content: Text(rawVideoUnsupportedMessage(t, error))));
 
-Future<void> _openImmersive(BuildContext context, WidgetRef ref, BaseAsset asset) async {
+Future<void> _openImmersive(BuildContext context, WidgetRef ref, BaseAsset asset, {bool flat2d = false}) async {
   // Read before the first await: the viewer may be gone by then
   final messenger = ScaffoldMessenger.maybeOf(context);
   final t = context.t;
@@ -67,6 +73,7 @@ Future<void> _openImmersive(BuildContext context, WidgetRef ref, BaseAsset asset
       ref,
       asset,
       stereoLabels: stereoLabels,
+      flat2d: flat2d,
       // Comes once the file is chosen, after the slow steps: the static translations do not need the viewer then
       onSourceNotice: (notice) =>
           messenger?.showSnackBar(SnackBar(content: Text(notice.message(StaticTranslations.instance)))),

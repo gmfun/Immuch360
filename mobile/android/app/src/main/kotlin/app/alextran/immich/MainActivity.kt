@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.ext.SdkExtensions
+import android.view.MotionEvent
 import app.alextran.immich.background.BackgroundEngineLock
 import app.alextran.immich.background.BackgroundWorkerApiImpl
 import app.alextran.immich.background.BackgroundWorkerFgHostApi
@@ -46,6 +47,9 @@ import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 
 class MainActivity : FlutterFragmentActivity() {
+  // Previous and next of the asset viewer by the thumbstick of a Meta Quest controller
+  private var stickPaging: QuestStickPaging? = null
+
   override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
     super.configureFlutterEngine(flutterEngine)
     registerPlugins(this, flutterEngine)
@@ -58,6 +62,7 @@ class MainActivity : FlutterFragmentActivity() {
     val messenger = flutterEngine.dartExecutor.binaryMessenger
     // TV detection and the native text dialog of the remote control layout: they need this activity
     TvApi.setUp(messenger, TvApiImpl(this))
+    stickPaging = QuestStickPaging(messenger)
     // Live view of the Tapo cameras: a platform view and the API that feeds it
     val cameraLiveViews = CameraLiveViewFactory(messenger)
     flutterEngine.platformViewsController.registry.registerViewFactory(CameraLiveViewFactory.VIEW_TYPE, cameraLiveViews)
@@ -73,6 +78,8 @@ class MainActivity : FlutterFragmentActivity() {
     // The TV dialog must not keep this activity once it is gone
     TvApi.setUp(flutterEngine.dartExecutor.binaryMessenger, null)
     CameraLiveApi.setUp(flutterEngine.dartExecutor.binaryMessenger, null)
+    stickPaging?.dispose()
+    stickPaging = null
     super.cleanUpFlutterEngine(flutterEngine)
   }
 
@@ -83,6 +90,9 @@ class MainActivity : FlutterFragmentActivity() {
     }
     super.onDestroy()
   }
+
+  override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean =
+    stickPaging?.onGenericMotion(event) == true || super.dispatchGenericMotionEvent(event)
 
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
