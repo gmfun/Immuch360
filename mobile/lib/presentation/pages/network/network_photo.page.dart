@@ -299,6 +299,29 @@ class _NetworkPhotoPageState extends ConsumerState<NetworkPhotoPage> {
     }
   }
 
+  /// Shows [photo], a flat 3D photo by its name (side by side, top and bottom, or RGBD), on a flat screen in the
+  /// immersive viewer, with previous and next through the folder like a 360° photo (see [FolderImmersiveNavigator])
+  Future<void> _openFlat(_Photo photo) async {
+    // Read before the first await: the page may be gone by then
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final errorMessage = context.t.immersive_viewer_open_failed;
+    final stereoLabels = sphereViewerLabels(context.t);
+    final request = folderImmersiveRequest(
+      photo,
+      _info ?? const NetworkMediaInfo(),
+      width: _imageSize?.width.round(),
+      height: _imageSize?.height.round(),
+    );
+    final around = widget.folder?.around(photo.entry, photo.url) ?? (items: [photo], index: 0);
+    final navigator = FolderImmersiveNavigator.read(ref, items: around.items, index: around.index, request: request);
+    try {
+      await openImmersiveUrl(ref, request: request, stereoLabels: stereoLabels, navigator: navigator);
+    } catch (error) {
+      _log.warning('Could not open ${photo.entry.name} in 3D: $error');
+      messenger?.showSnackBar(SnackBar(content: Text(errorMessage)));
+    }
+  }
+
   Future<void> _openImmersive(_Photo photo, SphereView view) async {
     // Read before the first await: the page may be gone by then
     final messenger = ScaffoldMessenger.maybeOf(context);
@@ -343,6 +366,10 @@ class _NetworkPhotoPageState extends ConsumerState<NetworkPhotoPage> {
         final photo = snapshot.data;
         final is360 = _info?.is360 ?? false;
         final stereoPair = isHorizonOs ? _info?.stereoPair : null;
+        // A flat 3D photo by its name shows in 3D on a flat screen in the headset, as in the asset viewer
+        final flatFormat = isHorizonOs && photo != null && stereoPair == null
+            ? flatShareFormat(photo.entry, is360: is360)
+            : null;
         final appBar = AppBar(
           backgroundColor: Colors.black38,
           foregroundColor: Colors.white,
@@ -363,6 +390,13 @@ class _NetworkPhotoPageState extends ConsumerState<NetworkPhotoPage> {
                       icon: const Icon(Icons.view_in_ar_rounded),
                       tooltip: context.t.apple_spatial_view_3d,
                       onPressed: () => unawaited(_openStereo(photo, stereoPair)),
+                    ),
+                  if (photo != null && flatFormat != null)
+                    IconButton(
+                      key: const Key('flat_stereo_view_3d'),
+                      icon: const Icon(Icons.view_in_ar_rounded),
+                      tooltip: context.t.apple_spatial_view_3d,
+                      onPressed: () => unawaited(_openFlat(photo)),
                     ),
                   if (photo != null && is360)
                     IconButton(

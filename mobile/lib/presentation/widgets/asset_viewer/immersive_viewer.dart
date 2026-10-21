@@ -1133,11 +1133,21 @@ class FolderImmersiveNavigator implements ImmersiveNavigator {
           if (_unplayable.contains(index)) {
             return false;
           }
+          final entry = _items[index].entry;
+          final flat = flatShareFormat(entry);
+          // An RGBD photo is flat whatever its file declares: no need to read it
+          if (flat == FlatStereoFormat.rgbd) {
+            return true;
+          }
           final info = await _detect(_items[index], request);
           if (info != null) {
             infos[index] = info;
           }
-          return info != null && info.is360 && _mayShow(_items[index].entry, info);
+          if (info != null && info.is360) {
+            return _mayShow(entry, info);
+          }
+          // A flat 3D file by its name, unless it declares 360°: shown on a flat screen
+          return flat != null;
         },
         limit: budget,
         isCancelled: () => request.isCancelled,
@@ -1198,7 +1208,7 @@ class FolderImmersiveNavigator implements ImmersiveNavigator {
   // What the viewer opens for [item], which declares [info]: a raw file stitched or with its rawProjection JSON
   Future<ImmersiveRequest> _requestFor(ImmersiveFolderItem item, NetworkMediaInfo info) async {
     final raw = _raw;
-    if (raw == null || info.rawKind == null) {
+    if (raw == null || info.rawKind == null || flatShareFormat(item.entry, is360: info.is360) != null) {
       return folderImmersiveRequest(item, info);
     }
     return raw.sharedMedia(
@@ -1268,10 +1278,26 @@ class FolderImmersiveNavigator implements ImmersiveNavigator {
 
 /// What the immersive viewer opens for [item], a file of a share whose file declares [info]: its layout and coverage
 /// from what it declares and its name (see [NetworkMediaInfo.sphereView]), its frame size being unknown until a
-/// player reads it
-ImmersiveRequest folderImmersiveRequest(ImmersiveFolderItem item, NetworkMediaInfo info) => ImmersiveRequest(
-  url: item.url.toString(),
-  isVideo: item.entry.isVideo,
-  title: item.entry.name,
-  view: info.sphereView(item.entry.name),
-);
+/// player reads it. A flat 3D file (see [flatShareFormat]) opens on a flat screen instead, with its flat format;
+/// [width] and [height], when the page knows them, tell squeezed eyes of a video apart.
+ImmersiveRequest folderImmersiveRequest(ImmersiveFolderItem item, NetworkMediaInfo info, {int? width, int? height}) {
+  final flat = flatShareFormat(item.entry, is360: info.is360, width: width, height: height);
+  return ImmersiveRequest(
+    url: item.url.toString(),
+    isVideo: item.entry.isVideo,
+    title: item.entry.name,
+    view: flat != null ? stereoPhotoSphereView : info.sphereView(item.entry.name),
+    flatFormat: flat,
+  );
+}
+
+/// How [entry], a file of a share, packs its eyes as a flat 3D media, as its name tells (see
+/// [guessFlatStereoFormat]); null for any other file. A side by side or top and bottom file that declares 360°
+/// ([is360]) stays a 360° media; an RGBD photo is flat whatever its file declares.
+FlatStereoFormat? flatShareFormat(NetworkEntry entry, {bool is360 = false, int? width, int? height}) {
+  final flat = guessFlatStereoFormat(fileName: entry.name, width: width, height: height, isVideo: entry.isVideo);
+  if (flat == null || (is360 && flat != FlatStereoFormat.rgbd)) {
+    return null;
+  }
+  return flat;
+}

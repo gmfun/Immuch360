@@ -507,7 +507,9 @@ class NetworkVideoPageState extends ConsumerState<NetworkVideoPage> with Widgets
         SpatialStereoLayout.auto;
   }
 
-  Future<void> _open360(_Video video) async {
+  /// Opens [video] in 360°: in the immersive viewer on a Meta Quest, in the native 360° player elsewhere. With [flat],
+  /// a flat 3D video by its name (see [flatShareFormat]) on a flat screen in the immersive viewer instead.
+  Future<void> _open360(_Video video, {bool flat = false}) async {
     final isHorizonOs = await ref.read(isHorizonOsProvider.future);
     if (!mounted) {
       return;
@@ -530,7 +532,14 @@ class NetworkVideoPageState extends ConsumerState<NetworkVideoPage> with Widgets
       final stereoLabels = sphereViewerLabels(t);
       final ImmersiveRequest request;
       try {
-        request = rawKind != null
+        request = flat
+            ? folderImmersiveRequest(
+                video,
+                _info ?? const NetworkMediaInfo(),
+                width: _videoSize?.width,
+                height: _videoSize?.height,
+              )
+            : rawKind != null
             ? await RawImmersiveMedia.read(
                 ref,
                 forAssets: false,
@@ -671,6 +680,10 @@ class NetworkVideoPageState extends ConsumerState<NetworkVideoPage> with Widgets
         final isRaw = video != null && _rawKind(video) != null;
         final is360 = (_info?.is360 ?? false) || isRaw;
         final isStereo = video != null && _isStereo(video);
+        // A flat 3D video by its name plays in 3D on a flat screen in the headset
+        final flatFormat = (isHorizonOs ?? false) && video != null && !isRaw
+            ? flatShareFormat(video.entry, is360: is360, width: _videoSize?.width, height: _videoSize?.height)
+            : null;
         final menu360 = can360 && !is360;
         final menuSpatial = canSpatial && !isStereo;
 
@@ -688,6 +701,13 @@ class NetworkVideoPageState extends ConsumerState<NetworkVideoPage> with Widgets
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (video != null && flatFormat != null)
+                    IconButton(
+                      key: const Key('flat_stereo_view_3d'),
+                      icon: const Icon(Icons.view_in_ar_rounded),
+                      tooltip: context.t.apple_spatial_view_3d,
+                      onPressed: () => unawaited(_open360(video, flat: true)),
+                    ),
                   if (video != null && can360 && is360)
                     IconButton(
                       icon: const Icon(Icons.threesixty_rounded),
