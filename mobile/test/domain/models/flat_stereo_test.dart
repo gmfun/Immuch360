@@ -14,6 +14,14 @@ void main() {
       expect(guessFlatStereoFormat(fileName: 'clip-vdaSmall-SBS.mp4', isVideo: true), FlatStereoFormat.sbs);
     });
 
+    test('takes rgbd over the 360° and VR words a converter keeps from the name of its source', () {
+      expect(guessFlatStereoFormat(fileName: 'Trip 360-da2_RGBD.png'), FlatStereoFormat.rgbd);
+      expect(guessFlatStereoFormat(fileName: 'Paris VR-depthPro-2_RGBD.png'), FlatStereoFormat.rgbd);
+      expect(guessFlatStereoFormat(fileName: 'beach_180-upscale-apple-4x-da2_RGBD.png'), FlatStereoFormat.rgbd);
+      // Side by side media keep the 360° rule: a 360° 3D video says so too
+      expect(guessFlatStereoFormat(fileName: 'Trip 360-da2-SBS.png'), isNull);
+    });
+
     test('reads the words of other players and rippers, in any case', () {
       expect(guessFlatStereoFormat(fileName: 'Movie.3D.Half-SBS.mkv', isVideo: true), FlatStereoFormat.halfSbs);
       expect(guessFlatStereoFormat(fileName: 'movie_LR.mp4', isVideo: true), FlatStereoFormat.sbs);

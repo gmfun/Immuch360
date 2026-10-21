@@ -50,7 +50,8 @@ final _wordSeparators = RegExp(r'[._\- ]+');
 ///   (1920x1080) or wider than 2.5:1 stacked (1920x1080) are taken as squeezed. Photos keep their eyes as they are:
 ///   a converter writes the squeezed ones with a word of their own, and two portrait photos side by side are common.
 ///
-/// The words of 360° and VR180 media (360, 180, vr, vr180, ...) make it no flat media at all.
+/// The words of 360° and VR180 media (360, 180, vr, vr180, ...) make it no flat media at all, except for rgbd: a photo
+/// with its depth beside it is always flat, and a converter keeps the name of its source ("Trip 360-da2_RGBD.png").
 FlatStereoFormat? guessFlatStereoFormat({required String? fileName, int? width, int? height, bool isVideo = false}) {
   if (fileName == null || fileName.isEmpty) {
     return null;
@@ -58,11 +59,11 @@ FlatStereoFormat? guessFlatStereoFormat({required String? fileName, int? width, 
   final dot = fileName.lastIndexOf('.');
   final stem = dot > 0 ? fileName.substring(0, dot) : fileName;
   final words = stem.toLowerCase().split(_wordSeparators).where((word) => word.isNotEmpty).toSet();
-  if (words.any(_sphereWords.contains)) {
-    return null;
-  }
   if (words.any(_rgbdWords.contains)) {
     return isVideo ? null : FlatStereoFormat.rgbd;
+  }
+  if (words.any(_sphereWords.contains)) {
+    return null;
   }
   final half = words.contains('half');
   if (words.any(_halfSideBySideWords.contains)) {
