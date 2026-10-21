@@ -4,6 +4,7 @@
   <item type="id" name="immersive_info_panel" />
   <item type="id" name="immersive_video_panel" />
   <item type="id" name="immersive_flat_video_panel" />
+  <item type="id" name="immersive_photo_panel" />
   <item type="id" name="immersive_feedback_panel" />
 
   <style name="ImmersivePanelTheme" parent="@android:style/Theme.Material.NoActionBar">
@@ -17,7 +18,7 @@
   <string name="immersive_back">Back</string>
   <string name="immersive_play">Play</string>
   <string name="immersive_pause">Pause</string>
-  <string name="immersive_hint">B or Y: back to the app. Trigger: play or pause. A, X or grip: show or hide this panel. Right thumbstick left or right: turn the view, hold it to keep turning. Left thumbstick left or right: previous or next media. Up or down: 10 seconds forward or back in a video, turn a photo by 90 degrees.</string>
+  <string name="immersive_hint">B or Y: back to the app. Trigger: play or pause. A, X or grip: show or hide this panel. Right thumbstick left or right: previous or next media; up or down: 10 seconds forward or back in a video, a larger or smaller flat screen, or turn a photo by 90 degrees. Left thumbstick left or right: turn the view, hold it to keep turning, or bring a flat screen back in front; up or down: a flat screen farther or nearer.</string>
   <string name="immersive_previous">Previous</string>
   <string name="immersive_next">Next</string>
   <string name="immersive_turn">Turn</string>
@@ -30,6 +31,14 @@
   <string name="immersive_plane">Plane %1$d%%</string>
   <string name="immersive_plane_less">Screen plane farther</string>
   <string name="immersive_plane_more">Screen plane nearer</string>
+  <!-- Screen row of a flat screen (a 3D photo or a flat 3D video): its angular width ("Size 48°") and its distance in
+       meters ("Distance 1.5 m"); a screen moved keeps its size in meters, so it looks larger nearer -->
+  <string name="immersive_size">Size %1$d°</string>
+  <string name="immersive_size_less">Smaller</string>
+  <string name="immersive_size_more">Larger</string>
+  <string name="immersive_distance">Distance %1$s m</string>
+  <string name="immersive_distance_less">Nearer</string>
+  <string name="immersive_distance_more">Farther</string>
   <string name="immersive_seek_back">10 seconds back</string>
   <string name="immersive_seek_forward">10 seconds forward</string>
   <string name="immersive_time">%1$s / %2$s</string>

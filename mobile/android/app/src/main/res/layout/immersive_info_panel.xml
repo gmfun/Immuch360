@@ -92,6 +92,66 @@
       android:tooltipText="@string/immersive_seek_forward" />
   </LinearLayout>
 
+  <!-- Size and distance of a flat screen (a 3D photo or a flat 3D video), shown for those only: its angular width, 6
+       degrees a click, and its distance, from 0.75 to 8 m, each with its minus and plus buttons -->
+  <LinearLayout
+    android:id="@+id/immersive_screen_row"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="8dp"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:visibility="gone">
+    <Button
+      android:id="@+id/immersive_size_less"
+      android:layout_width="56dp"
+      android:layout_height="wrap_content"
+      android:contentDescription="@string/immersive_size_less"
+      android:text="−"
+      android:textSize="20sp" />
+    <TextView
+      android:id="@+id/immersive_size"
+      android:layout_width="0dp"
+      android:layout_height="wrap_content"
+      android:layout_weight="1"
+      android:fontFeatureSettings="tnum"
+      android:gravity="center"
+      android:maxLines="1"
+      android:textColor="#FFE8EEFF"
+      android:textSize="17sp" />
+    <Button
+      android:id="@+id/immersive_size_more"
+      android:layout_width="56dp"
+      android:layout_height="wrap_content"
+      android:layout_marginEnd="20dp"
+      android:contentDescription="@string/immersive_size_more"
+      android:text="+"
+      android:textSize="20sp" />
+    <Button
+      android:id="@+id/immersive_distance_less"
+      android:layout_width="56dp"
+      android:layout_height="wrap_content"
+      android:contentDescription="@string/immersive_distance_less"
+      android:text="−"
+      android:textSize="20sp" />
+    <TextView
+      android:id="@+id/immersive_distance"
+      android:layout_width="0dp"
+      android:layout_height="wrap_content"
+      android:layout_weight="1"
+      android:fontFeatureSettings="tnum"
+      android:gravity="center"
+      android:maxLines="1"
+      android:textColor="#FFE8EEFF"
+      android:textSize="17sp" />
+    <Button
+      android:id="@+id/immersive_distance_more"
+      android:layout_width="56dp"
+      android:layout_height="wrap_content"
+      android:contentDescription="@string/immersive_distance_more"
+      android:text="+"
+      android:textSize="20sp" />
+  </LinearLayout>
   <!-- Depth of an RGBD photo, shown for those only, where the time bar of a video goes: the strength (the separation
        of the eyes, off to 12% of the width, half a percent a click) and the screen plane (the depth that sits on the
        screen, 0% far to 100% near, a tenth a click), each with its minus and plus buttons -->

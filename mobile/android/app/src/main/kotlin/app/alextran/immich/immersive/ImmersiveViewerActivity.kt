@@ -7,8 +7,10 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.RectF
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -55,6 +57,7 @@ import com.meta.spatial.core.Vector3
 import com.meta.spatial.runtime.AddressMode
 import com.meta.spatial.runtime.EquirectLayerConfig
 import com.meta.spatial.runtime.Filter
+import com.meta.spatial.runtime.LayerFilters
 import com.meta.spatial.runtime.MaterialSidedness
 import com.meta.spatial.runtime.PanelSceneObject
 import com.meta.spatial.runtime.PanelShapeType
@@ -96,6 +99,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.coroutineContext
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 import kotlinx.coroutines.CancellationException
@@ -320,6 +324,32 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   /** The flat video layer was placed in front of a known head pose, see [placeFlatVideo]. */
   private var flatPlacedWithHead = false
 
+  /**
+   * The photo layer: a quad compositor layer that shows the photos of the stereo quad, drawn through its Surface (see
+   * [drawPhotoLayer]); its panel, Surface and entity. The compositor samples it once, straight to the display, with
+   * its super sampling and sharpening, where the quad mesh goes through the eye buffer first: a sharper photo. The
+   * mesh stays for a photo shown before the layer is ready.
+   */
+  private var photoLayerPanel: PanelSceneObject? = null
+  private var photoLayerSurface: Surface? = null
+  private var photoLayerEntity: Entity? = null
+
+  /** The photo on the layer, kept to draw it again on a new Surface; null while the mesh shows the photo. */
+  private var photoLayerBitmap: Bitmap? = null
+
+  /** The width of the eye drawn, of the width of its half of the layer (the rest is black), see [drawPhotoLayer]. */
+  private var photoLayerFill = 1f
+
+  /** Height of the layer, of the width of one of its halves. */
+  private var photoLayerAspect = 1f
+
+  /**
+   * The eyes and the horizontal direction a flat screen (the stereo quad, the photo layer or the flat video layer) was
+   * placed from, so that the Distance buttons move it along the same line; see [screenPose].
+   */
+  private var screenEyes: Vector3? = null
+  private var screenDirection: Vector3? = null
+
   /** The color and the depth of the RGBD photo on the quad, null for any other media; see [changeRgbd]. */
   private var rgbdPixels: RgbdPixels? = null
 
@@ -333,7 +363,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   private var stereoTexture: SceneTexture? = null
   /** A texture decoded before the material of the quad was ready, set once it is. */
   private var pendingStereo: StereoTexture? = null
-  /** Size of an eye on the texture shown, without its gutter; null before the first spatial photo. */
+  /** Size of an eye on the texture shown, without its gutter; null while no spatial photo is shown. */
   private var stereoEyeSize: Pair<Int, Int>? = null
   /** Angular width of the quad, from the field of view of the photo, then the thumbstick. */
   private var stereoAngleDeg = StereoComposer.DEFAULT_ANGLE_DEG
@@ -360,6 +390,14 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   private var planeView: TextView? = null
   private var planeLessButton: Button? = null
   private var planeMoreButton: Button? = null
+  /** Size and Distance row of a flat screen, see [updateScreenControls]. */
+  private var screenRow: View? = null
+  private var sizeView: TextView? = null
+  private var sizeLessButton: Button? = null
+  private var sizeMoreButton: Button? = null
+  private var distanceView: TextView? = null
+  private var distanceLessButton: Button? = null
+  private var distanceMoreButton: Button? = null
   /** Turns the sphere by 90 degrees; hidden for a spatial photo, which has no sphere. */
   private var turnButton: View? = null
   private var playPauseButton: Button? = null
@@ -593,6 +631,12 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
           Transform(Pose(Vector3(0f, DEFAULT_EYE_HEIGHT, StereoComposer.DISTANCE_M), Quaternion(0f, 0f, 0f))),
           Visible(false),
         )
+      photoLayerEntity =
+        Entity.create(
+          Panel(R.id.immersive_photo_panel),
+          Transform(Pose(Vector3(0f, DEFAULT_EYE_HEIGHT, StereoComposer.DISTANCE_M), Quaternion(0f, 0f, 0f))),
+          Visible(false),
+        )
       infoEntity =
         Entity.createPanelEntity(
           R.id.immersive_info_panel,
@@ -683,12 +727,41 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
           MediaPanelSettings(
             shape = QuadShapeOptions(width = width, height = height),
             display = PixelDisplayOptions(width = FLAT_VIDEO_PANEL_WIDTH_PX, height = FLAT_VIDEO_PANEL_HEIGHT_PX),
-            rendering = MediaPanelRenderOptions(stereoMode = StereoMode.None),
+            rendering = MediaPanelRenderOptions(stereoMode = StereoMode.None, layerFilters = LAYER_FILTERS),
           )
         },
         panelSetup = { panel, _ ->
           flatVideoPanel = panel
           scope.launch(Dispatchers.Main) { applyFlatVideoShape() }
+        },
+      ),
+      // Photos of the stereo quad: a quad compositor layer like the flat video one, behind the panels like the video
+      // sphere, each eye drawn in its half of the Surface (drawPhotoLayer). Created mono, square eyes, reshaped for
+      // each photo (applyPhotoLayerShape)
+      VideoSurfacePanelRegistration(
+        R.id.immersive_photo_panel,
+        surfaceConsumer = { _, surface ->
+          Log.i(TAG, "photo layer surface ready")
+          runOnUiThread {
+            photoLayerSurface = surface
+            // A new Surface after the previous one went away: the photo shown goes on it again
+            val bitmap = photoLayerBitmap
+            val size = stereoEyeSize
+            if (bitmap != null && size != null && !bitmap.isRecycled) drawPhotoLayer(bitmap, size.first, size.second)
+          }
+        },
+        settingsCreator = {
+          val width = StereoComposer.screenWidth(StereoComposer.DEFAULT_ANGLE_DEG, StereoComposer.DISTANCE_M)
+          MediaPanelSettings(
+            shape = QuadShapeOptions(width = width, height = width),
+            display = PixelDisplayOptions(width = PHOTO_PANEL_WIDTH_PX, height = PHOTO_PANEL_HEIGHT_PX),
+            rendering =
+              MediaPanelRenderOptions(stereoMode = StereoMode.None, layerFilters = LAYER_FILTERS, zIndex = -1),
+          )
+        },
+        panelSetup = { panel, _ ->
+          Log.i(TAG, "photo layer ready")
+          photoLayerPanel = panel
         },
       ),
     )
@@ -767,6 +840,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
       media.isStereoPhoto -> showStereoPhoto(media)
       else -> showPhoto(media)
     }
+    updateScreenControls()
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -784,6 +858,13 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     planeView = root.findViewById(R.id.immersive_plane)
     planeLessButton = root.findViewById(R.id.immersive_plane_less)
     planeMoreButton = root.findViewById(R.id.immersive_plane_more)
+    screenRow = root.findViewById(R.id.immersive_screen_row)
+    sizeView = root.findViewById(R.id.immersive_size)
+    sizeLessButton = root.findViewById(R.id.immersive_size_less)
+    sizeMoreButton = root.findViewById(R.id.immersive_size_more)
+    distanceView = root.findViewById(R.id.immersive_distance)
+    distanceLessButton = root.findViewById(R.id.immersive_distance_less)
+    distanceMoreButton = root.findViewById(R.id.immersive_distance_more)
     turnButton = root.findViewById(R.id.immersive_turn)
     playPauseButton = root.findViewById(R.id.immersive_play_pause)
     seekRow = root.findViewById(R.id.immersive_seek_row)
@@ -803,6 +884,10 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     onPanelClick(depthMoreButton) { changeRgbd(strengthStep = 1) }
     onPanelClick(planeLessButton) { changeRgbd(planeStep = -1) }
     onPanelClick(planeMoreButton) { changeRgbd(planeStep = 1) }
+    onPanelClick(sizeLessButton) { changeScreenSize(-1) }
+    onPanelClick(sizeMoreButton) { changeScreenSize(1) }
+    onPanelClick(distanceLessButton) { changeScreenDistance(-1) }
+    onPanelClick(distanceMoreButton) { changeScreenDistance(1) }
     onPanelClick(turnButton) { rotateSphere(YAW_STEP_DEGREES) }
     onPanelClick(seekBackButton) { seekBy(-1) }
     onPanelClick(seekForwardButton) { seekBy(1) }
@@ -817,6 +902,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     updateCoverageView()
     updateTurnButton()
     updateRgbdControls()
+    updateScreenControls()
   }
 
   /** The turn button is there for the media shown on a sphere only. */
@@ -1231,6 +1317,19 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
           when {
             isVideo -> seekFromThumbstick(-1)
             isStereoPhoto -> resizeStereoQuad(-1)
+            else -> turnFromThumbstick(-YAW_STEP_DEGREES)
+          }
+        // Pushed away, the flat screen goes farther; pulled back, nearer
+        ImmersiveControls.Action.LEFT_STICK_UP ->
+          when {
+            isStereoPhoto || isFlatVideo -> changeScreenDistance(1)
+            isVideo -> seekFromThumbstick(1)
+            else -> turnFromThumbstick(YAW_STEP_DEGREES)
+          }
+        ImmersiveControls.Action.LEFT_STICK_DOWN ->
+          when {
+            isStereoPhoto || isFlatVideo -> changeScreenDistance(-1)
+            isVideo -> seekFromThumbstick(-1)
             else -> turnFromThumbstick(-YAW_STEP_DEGREES)
           }
         ImmersiveControls.Action.TOGGLE_PANEL -> {
@@ -1904,7 +2003,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     restoredStereoChoices = null
     stereo3d = restored?.threeD ?: true
     stereoHasSecondEye = false
-    stereoAngleDeg = restored?.angleDeg ?: StereoComposer.initialAngle(spec?.horizontalFovDeg)
+    stereoAngleDeg = restored?.angleDeg ?: chosenScreenAngleDeg ?: StereoComposer.initialAngle(spec?.horizontalFovDeg)
     stereoChoicesFor = media.url to media.openingId
     updateStereoView()
     setStatus(getString(R.string.immersive_loading))
@@ -2150,18 +2249,54 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   }
 
   /**
-   * Uploads [stereo] as the texture of the quad, recycles its bitmap, destroys the previous texture, then shows the
-   * quad in front of the user with the mode and the size of this photo. Kept for later while the material is not
-   * ready. With [refresh], the same photo made again (an RGBD photo at another depth strength): the quad stays where
-   * the user left it, and the status line keeps the strength.
+   * Shows [stereo] in front of the user with the mode and the size of this photo: drawn on the photo layer, which keeps
+   * its bitmap to draw it again, or else uploaded as the texture of the quad mesh, its bitmap recycled and the previous
+   * texture destroyed. Kept for later while neither is ready. With [refresh], the same photo made again (an RGBD photo
+   * at another depth strength): the photo stays where the user left it, and the status line keeps the strength.
    */
   private fun applyStereoTexture(stereo: StereoTexture, refresh: Boolean = false) {
+    val onLayer = drawPhotoLayer(stereo.bitmap, stereo.eyeWidth, stereo.eyeHeight)
+    if (onLayer) {
+      photoLayerBitmap?.takeIf { it !== stereo.bitmap }?.recycle()
+      photoLayerBitmap = stereo.bitmap
+      stereoQuadEntity?.setComponent(Visible(false))
+    } else if (!applyStereoMesh(stereo)) {
+      return
+    }
+    stereoEyeSize = stereo.eyeWidth to stereo.eyeHeight
+    stereoHasSecondEye = stereo.hasSecondEye
+    rgbdPixels = stereo.rgbd
+    applyStereoMode()
+    applyStereoScale()
+    updateRgbdControls()
+    updateScreenControls()
+    if (refresh) return
+    placeStereoQuad()
+    (if (onLayer) photoLayerEntity else stereoQuadEntity)?.setComponent(Visible(true))
+    updateStereoView()
+    val media = request
+    if (media?.stereoPair != null && !stereo.hasSecondEye) {
+      // Shown at once and longer, as the decoder warning: the user expected 3D
+      showStatus(StereoComposer.label(media.stereoLabels, StereoComposer.LABEL_SECOND_EYE_FAILED))
+      scheduleInfoHide(DECODER_WARNING_HIDE_MS)
+    } else {
+      setStatus(getString(R.string.immersive_full_resolution, stereo.eyeWidth, stereo.eyeHeight))
+      scheduleInfoHide()
+    }
+  }
+
+  /**
+   * [stereo] as the texture of the quad mesh, when the photo layer cannot show it: its bitmap recycled, the previous
+   * texture destroyed, the photo layer hidden. False, [stereo] kept for later, while the material is not ready; false
+   * too when the texture cannot be made, which the status line tells.
+   */
+  private fun applyStereoMesh(stereo: StereoTexture): Boolean {
     val material = stereoQuadMaterial
     if (material == null) {
       Log.w(TAG, "stereo quad not ready yet, keeping the spatial photo for later")
       pendingStereo?.bitmap?.recycle()
       pendingStereo = stereo
-      return
+      return false
     }
     val bitmap = stereo.bitmap
     val texture =
@@ -2185,28 +2320,85 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
       }
     if (texture == null) {
       showError(getString(R.string.immersive_error_photo, "texture"))
-      return
+      return false
     }
     material.setAlbedoTexture(texture)
     stereoTexture?.destroy()
     stereoTexture = texture
-    stereoEyeSize = stereo.eyeWidth to stereo.eyeHeight
-    stereoHasSecondEye = stereo.hasSecondEye
-    rgbdPixels = stereo.rgbd
-    applyStereoMode()
-    updateRgbdControls()
-    if (refresh) return
-    placeStereoQuad()
-    stereoQuadEntity?.setComponent(Visible(true))
-    updateStereoView()
-    val media = request
-    if (media?.stereoPair != null && !stereo.hasSecondEye) {
-      // Shown at once and longer, as the decoder warning: the user expected 3D
-      showStatus(StereoComposer.label(media.stereoLabels, StereoComposer.LABEL_SECOND_EYE_FAILED))
-      scheduleInfoHide(DECODER_WARNING_HIDE_MS)
-    } else {
-      setStatus(getString(R.string.immersive_full_resolution, stereo.eyeWidth, stereo.eyeHeight))
-      scheduleInfoHide()
+    photoLayerBitmap?.recycle()
+    photoLayerBitmap = null
+    photoLayerEntity?.setComponent(Visible(false))
+    return true
+  }
+
+  /**
+   * Draws [bitmap], two eyes of [eyeWidth] x [eyeHeight] side by side in their gutters (see StereoComposer.compose), on
+   * the Surface of the photo layer: each eye in its half, as large as it fits with its shape kept, centered on black
+   * (the black around the photo), filtered once when it does not fit pixel for pixel. False when there is no layer
+   * yet or the drawing fails: the quad mesh shows the photo instead.
+   */
+  private fun drawPhotoLayer(bitmap: Bitmap, eyeWidth: Int, eyeHeight: Int): Boolean {
+    val surface = photoLayerSurface ?: return false
+    if (photoLayerPanel == null || !surface.isValid || eyeWidth <= 0 || eyeHeight <= 0) return false
+    val canvas =
+      try {
+        surface.lockHardwareCanvas()
+      } catch (e: Exception) {
+        Log.e(TAG, "photo layer surface could not be locked", e)
+        return false
+      }
+    try {
+      canvas.drawColor(Color.BLACK)
+      val half = canvas.width / 2f
+      val height = canvas.height.toFloat()
+      val scale = min(half / eyeWidth, height / eyeHeight)
+      val width = eyeWidth * scale
+      val drawnHeight = eyeHeight * scale
+      val top = (height - drawnHeight) / 2f
+      val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+      val gutter = StereoComposer.GUTTER
+      for (eye in 0..1) {
+        val sourceLeft = eye * (eyeWidth + 2 * gutter) + gutter
+        val left = eye * half + (half - width) / 2f
+        canvas.drawBitmap(
+          bitmap,
+          Rect(sourceLeft, gutter, sourceLeft + eyeWidth, gutter + eyeHeight),
+          RectF(left, top, left + width, top + drawnHeight),
+          paint,
+        )
+      }
+      photoLayerFill = width / half
+      photoLayerAspect = height / half
+      Log.i(TAG, "photo layer drawn: eyes ${eyeWidth}x$eyeHeight at ${width.roundToInt()}x${drawnHeight.roundToInt()}")
+    } catch (e: Exception) {
+      Log.e(TAG, "photo layer drawing failed", e)
+      return false
+    } finally {
+      surface.unlockCanvasAndPost(canvas)
+    }
+    return true
+  }
+
+  /**
+   * The stereo mode and the shape of the photo layer for the photo on it: the eye [stereoAngleDeg] wide at the
+   * distance of the screen, the black beside it more. Nothing while the mesh shows the photo.
+   */
+  private fun applyPhotoLayerShape() {
+    if (photoLayerBitmap == null) return
+    val panel = photoLayerPanel ?: return
+    val config = panel.panelShapeConfig ?: return
+    val mode = if (stereo3d && stereoHasSecondEye) StereoMode.LeftRight else StereoMode.MonoLeft
+    val width = StereoComposer.screenWidth(stereoAngleDeg, screenDistanceM) / photoLayerFill
+    val height = width * photoLayerAspect
+    if (config.stereoMode == mode && abs(config.width - width) < 1e-3f && abs(config.height - height) < 1e-3f) return
+    try {
+      config.stereoMode = mode
+      config.width = width
+      config.height = height
+      panel.reshape(config)
+      Log.i(TAG, "photo layer is now $mode, ${width}x$height m")
+    } catch (e: Exception) {
+      Log.e(TAG, "could not set the photo layer to $mode, ${width}x$height m", e)
     }
   }
 
@@ -2214,6 +2406,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   private fun applyStereoMode() {
     val mode = if (stereo3d && stereoHasSecondEye) StereoMode.LeftRight else StereoMode.MonoLeft
     stereoQuadMaterial?.setStereoMode(mode)
+    applyPhotoLayerShape()
     Log.i(TAG, "stereo quad mode is now $mode")
   }
 
@@ -2235,37 +2428,137 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
    * eye position; [onFrame] places it again once the pose is known.
    */
   private fun placeStereoQuad() {
-    val entity = stereoQuadEntity ?: return
-    val head = lastHeadPosition
-    val eyes = head ?: Vector3(0f, DEFAULT_EYE_HEIGHT, 0f)
-    val forward = lastHeadForward ?: Vector3(0f, 0f, 1f)
-    val flat = sqrt(forward.x * forward.x + forward.z * forward.z)
-    val direction = if (flat < 1e-3f) Vector3(0f, 0f, 1f) else Vector3(forward.x / flat, 0f, forward.z / flat)
-    val position = eyes + (direction * StereoComposer.DISTANCE_M)
-    position.y = eyes.y
-    entity.setComponent(Transform(Pose(position, StereoComposer.quadRotation(direction))))
-    stereoPlacedWithHead = head != null
+    val pose = screenPose(recenter = true)
+    stereoQuadEntity?.setComponent(Transform(pose))
+    photoLayerEntity?.setComponent(Transform(pose))
+    stereoPlacedWithHead = lastHeadPosition != null
     applyStereoScale()
-    Log.i(
-      TAG,
-      "stereo quad placed at $position, gaze $direction, head ${if (head != null) "known" else "unknown"}",
-    )
+    Log.i(TAG, "stereo quad placed at ${pose.t}, head ${if (stereoPlacedWithHead) "known" else "unknown"}")
   }
 
-  /** The size of the quad for the angular width chosen and the eyes of the photo shown. */
+  /**
+   * Where a flat screen goes: [screenDistanceM] in front of the eyes, at their height, facing them the way the info
+   * panel does (see StereoComposer.quadRotation). With [recenter], along the horizontal gaze, before the first head
+   * pose in front of the default eye position; without, along the line it was placed on, for a new distance.
+   */
+  private fun screenPose(recenter: Boolean): Pose {
+    var eyes = screenEyes
+    var direction = screenDirection
+    if (recenter || eyes == null || direction == null) {
+      val head = lastHeadPosition
+      eyes = head?.let { Vector3(it.x, it.y, it.z) } ?: Vector3(0f, DEFAULT_EYE_HEIGHT, 0f)
+      val forward = lastHeadForward ?: Vector3(0f, 0f, 1f)
+      val flat = sqrt(forward.x * forward.x + forward.z * forward.z)
+      direction = if (flat < 1e-3f) Vector3(0f, 0f, 1f) else Vector3(forward.x / flat, 0f, forward.z / flat)
+      screenEyes = eyes
+      screenDirection = direction
+    }
+    val position = eyes + (direction * screenDistanceM)
+    position.y = eyes.y
+    return Pose(position, StereoComposer.quadRotation(direction))
+  }
+
+  /** The size of the quad (or of the photo layer) for the angular width chosen and the eyes of the photo shown. */
   private fun applyStereoScale() {
     val (eyeWidth, eyeHeight) = stereoEyeSize ?: return
-    val (width, height) = StereoComposer.quadSize(stereoAngleDeg, eyeWidth, eyeHeight)
+    val (width, height) = StereoComposer.quadSize(stereoAngleDeg, eyeWidth, eyeHeight, screenDistanceM)
     stereoQuadEntity?.setComponent(Scale(Vector3(width, height, 1f)))
+    applyPhotoLayerShape()
   }
 
   /** The thumbstick up ([step] 1) or down (-1) on a spatial photo: a wider or narrower quad, where it is. */
   private fun resizeStereoQuad(step: Int) {
     stereoAngleDeg = StereoComposer.nextAngle(stereoAngleDeg, step)
+    chosenScreenAngleDeg = stereoAngleDeg
     applyStereoScale()
     Log.i(TAG, "stereo quad is now $stereoAngleDeg degrees wide")
-    val text = "${stereoAngleDeg.roundToInt()}°"
+    updateScreenControls()
+    reportScreenChange(sizeText(stereoAngleDeg))
+  }
+
+  /**
+   * The Size buttons: a larger ([step] 1) or smaller (-1) flat screen, where it is, kept for the photos or the flat
+   * videos shown after this one.
+   */
+  private fun changeScreenSize(step: Int) {
+    val media = request ?: return
+    when {
+      media.isStereoPhoto -> resizeStereoQuad(step)
+      media.isFlatVideo -> {
+        flatVideoAngleDeg = StereoComposer.nextAngle(flatVideoAngleDeg, step)
+        applyFlatVideoShape()
+        Log.i(TAG, "flat video layer is now $flatVideoAngleDeg degrees wide")
+        updateScreenControls()
+        reportScreenChange(sizeText(flatVideoAngleDeg))
+      }
+    }
+  }
+
+  /**
+   * The Distance buttons and the left thumbstick up or down: the flat screen farther ([step] 1) or nearer (-1) along
+   * the line it was placed on, the same size in meters (see StereoComposer.angleAtDistance), so that it looks larger
+   * nearer. The distance is kept for the flat media shown after this one.
+   */
+  private fun changeScreenDistance(step: Int) {
+    val media = request ?: return
+    if (!media.isStereoPhoto && !media.isFlatVideo) return
+    val distance = StereoComposer.nextDistance(screenDistanceM, step)
+    if (distance != screenDistanceM) {
+      stereoAngleDeg = StereoComposer.angleAtDistance(stereoAngleDeg, screenDistanceM, distance)
+      flatVideoAngleDeg = StereoComposer.angleAtDistance(flatVideoAngleDeg, screenDistanceM, distance)
+      if (media.isStereoPhoto) chosenScreenAngleDeg = stereoAngleDeg
+      screenDistanceM = distance
+      val pose = screenPose(recenter = false)
+      if (media.isFlatVideo) {
+        flatVideoEntity?.setComponent(Transform(pose))
+        applyFlatVideoShape()
+      } else {
+        stereoQuadEntity?.setComponent(Transform(pose))
+        photoLayerEntity?.setComponent(Transform(pose))
+        applyStereoScale()
+      }
+      Log.i(TAG, "flat screen is now $distance m away")
+      updateScreenControls()
+    }
+    reportScreenChange(distanceText(screenDistanceM))
+  }
+
+  /** A change of the flat screen on the status line of the panel, or on the feedback line when the panel is hidden. */
+  private fun reportScreenChange(text: String) {
     if (infoVisible) setStatus(text) else showFeedback(text)
+  }
+
+  /** "Size 48°". */
+  private fun sizeText(angleDeg: Float): String = getString(R.string.immersive_size, angleDeg.roundToInt())
+
+  /** "Distance 1.5 m". */
+  private fun distanceText(distance: Float): String =
+    getString(R.string.immersive_distance, StereoComposer.meters(distance))
+
+  /**
+   * The Size and Distance row is there for a flat screen only (a 3D photo once it is shown, or a flat 3D video); a
+   * minus or plus button at its bound is disabled.
+   */
+  private fun updateScreenControls() {
+    val row = screenRow ?: return
+    val media = request
+    val angle =
+      when {
+        media?.isFlatVideo == true -> flatVideoAngleDeg
+        media?.isStereoPhoto == true && stereoEyeSize != null -> stereoAngleDeg
+        else -> null
+      }
+    if (angle == null) {
+      row.visibility = View.GONE
+      return
+    }
+    sizeView?.text = sizeText(angle)
+    distanceView?.text = distanceText(screenDistanceM)
+    sizeLessButton?.isEnabled = angle > StereoComposer.MIN_ANGLE_DEG + 1e-3f
+    sizeMoreButton?.isEnabled = angle < StereoComposer.MAX_ANGLE_DEG - 1e-3f
+    distanceLessButton?.isEnabled = screenDistanceM > StereoComposer.DISTANCES_M.first() + 1e-3f
+    distanceMoreButton?.isEnabled = screenDistanceM < StereoComposer.DISTANCES_M.last() - 1e-3f
+    row.visibility = View.VISIBLE
   }
 
   /** Any other media: the quad goes away (its texture stays until the next spatial photo replaces it). */
@@ -2275,9 +2568,14 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     rgbdPixels = null
     updateRgbdControls()
     stereoQuadEntity?.setComponent(Visible(false))
+    photoLayerEntity?.setComponent(Visible(false))
+    photoLayerBitmap?.recycle()
+    photoLayerBitmap = null
     pendingStereo?.bitmap?.recycle()
     pendingStereo = null
     stereoPlacedWithHead = false
+    stereoEyeSize = null
+    updateScreenControls()
   }
 
   private fun showPhoto(media: MediaRequest) {
@@ -2977,9 +3275,9 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   /** The Surface the player draws on: the flat video layer for a flat 3D video, the sphere for any other video. */
   private fun activeVideoSurface(): Surface? = if (request?.isFlatVideo == true) flatVideoSurface else videoSurface
 
-  /** Width and height in meters of the flat video layer, FLAT_SCREEN_ANGLE_DEG wide at the distance of the quad. */
+  /** Width and height in meters of the flat video layer, [flatVideoAngleDeg] wide at the distance of the screen. */
   private fun flatScreenSize(aspect: Float): Pair<Float, Float> {
-    val width = 2f * StereoComposer.DISTANCE_M * Math.tan(Math.toRadians(FLAT_SCREEN_ANGLE_DEG / 2.0)).toFloat()
+    val width = StereoComposer.screenWidth(flatVideoAngleDeg, screenDistanceM)
     return width to width / aspect
   }
 
@@ -3020,15 +3318,8 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
    */
   private fun placeFlatVideo() {
     val entity = flatVideoEntity ?: return
-    val head = lastHeadPosition
-    val eyes = head ?: Vector3(0f, DEFAULT_EYE_HEIGHT, 0f)
-    val forward = lastHeadForward ?: Vector3(0f, 0f, 1f)
-    val flat = sqrt(forward.x * forward.x + forward.z * forward.z)
-    val direction = if (flat < 1e-3f) Vector3(0f, 0f, 1f) else Vector3(forward.x / flat, 0f, forward.z / flat)
-    val position = eyes + (direction * StereoComposer.DISTANCE_M)
-    position.y = eyes.y
-    entity.setComponent(Transform(Pose(position, Quaternion.lookRotation(direction))))
-    flatPlacedWithHead = head != null
+    entity.setComponent(Transform(screenPose(recenter = true)))
+    flatPlacedWithHead = lastHeadPosition != null
   }
 
   private fun showVideo(media: MediaRequest) {
@@ -3283,6 +3574,8 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     navigationTimeoutJob = null
     if (liveViewer === this) liveViewer = null
     scope.cancel()
+    photoLayerBitmap?.recycle()
+    photoLayerBitmap = null
     super.onDestroy()
   }
 
@@ -3370,7 +3663,20 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     private const val FLAT_VIDEO_PANEL_HEIGHT_PX = 2160
 
     /** Angular width of the flat video layer, at the distance of the stereo quad: a large screen, still all in view. */
-    private const val FLAT_SCREEN_ANGLE_DEG = 60.0
+    private const val FLAT_SCREEN_ANGLE_DEG = 60f
+
+    /**
+     * Surface of the photo layer: two square eyes of 2560 pixels, the widest eye decoded
+     * (StereoHeicDecoder.MAX_EYE_WIDTH) drawn pixel for pixel, a portrait one drawn at the full height.
+     */
+    private const val PHOTO_PANEL_WIDTH_PX = 5120
+    private const val PHOTO_PANEL_HEIGHT_PX = 2560
+
+    /**
+     * Compositor filters of the flat layers: quality super sampling for a picture larger than the screen pixels it
+     * covers, quality sharpening for a smaller one, the compositor picking the one that applies.
+     */
+    private val LAYER_FILTERS = LayerFilters.HIGHEST_QUALITY or LayerFilters.AUTO_FILTER
 
     /** Refresh interval of the time bar while the panel is on screen. */
     private const val PROGRESS_INTERVAL_MS = 500L
@@ -3419,6 +3725,15 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
 
     /** Screen plane of the RGBD photos, as the Plane buttons left it; like [rgbdStrength]. */
     private var rgbdPlane = FlatStereo.RGBD_SCREEN_PLANE
+
+    /** Distance of the flat screens (3D photos, flat 3D videos) the Distance buttons left; like [rgbdStrength]. */
+    private var screenDistanceM = StereoComposer.DISTANCE_M
+
+    /** Angular width of the 3D photos as the Size buttons left it, which the next ones open at; null before. */
+    private var chosenScreenAngleDeg: Float? = null
+
+    /** Angular width of the flat 3D videos, as the Size buttons left it. */
+    private var flatVideoAngleDeg = FLAT_SCREEN_ANGLE_DEG
 
     /** Token of the last intent built by [intent], checked by parse. Lives as long as the process. */
     @Volatile private var launchToken: String? = null

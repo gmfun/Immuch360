@@ -13,7 +13,9 @@ import android.util.Log
 import com.meta.spatial.core.Quaternion
 import com.meta.spatial.core.Vector3
 import java.nio.ByteBuffer
+import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.atan
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.tan
@@ -256,10 +258,13 @@ internal object StereoComposer {
   const val MIN_FILE_ANGLE_DEG = 35f
   const val MAX_FILE_ANGLE_DEG = 60f
 
-  /** What the thumbstick changes the angular width by, within its bounds. */
+  /** What the thumbstick and the Size buttons change the angular width by, within its bounds. */
   const val ANGLE_STEP_DEG = 6f
-  const val MIN_ANGLE_DEG = 30f
-  const val MAX_ANGLE_DEG = 90f
+  const val MIN_ANGLE_DEG = 10f
+  const val MAX_ANGLE_DEG = 120f
+
+  /** The distances of the screen, in meters, that the Distance buttons and the left thumbstick step through. */
+  val DISTANCES_M = floatArrayOf(0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f, 4f, 5f, 6f, 8f)
 
   /** The columns of each eye kept on the texture: from [leftStart] and [rightStart], [width] wide. */
   data class Crop(val leftStart: Int, val rightStart: Int, val width: Int)
@@ -295,12 +300,38 @@ internal object StereoComposer {
   fun nextAngle(angleDeg: Float, step: Int): Float =
     (angleDeg + step * ANGLE_STEP_DEG).coerceIn(MIN_ANGLE_DEG, MAX_ANGLE_DEG)
 
+  /** The distance after a push of the Distance buttons, farther ([step] 1) or nearer (-1), from the nearest one. */
+  fun nextDistance(distance: Float, step: Int): Float {
+    val index = DISTANCES_M.indices.minBy { abs(DISTANCES_M[it] - distance) }
+    return DISTANCES_M[(index + step).coerceIn(0, DISTANCES_M.lastIndex)]
+  }
+
+  /**
+   * The angular width at [to] meters of a screen [angleDeg] wide at [from]: the same screen in meters, so that it
+   * looks larger nearer and smaller farther, as a real one would; within the bounds of the angular width.
+   */
+  fun angleAtDistance(angleDeg: Float, from: Float, to: Float): Float {
+    val half = atan(tan(Math.toRadians(angleDeg / 2.0)) * from / to)
+    return Math.toDegrees(2 * half).toFloat().coerceIn(MIN_ANGLE_DEG, MAX_ANGLE_DEG)
+  }
+
+  /** Width in meters of a screen [angleDeg] wide at [distance]. */
+  fun screenWidth(angleDeg: Float, distance: Float): Float =
+    2f * distance * tan(Math.toRadians(angleDeg / 2.0)).toFloat()
+
+  /** A distance as the Distance label shows it: "2", "1.5", "0.75". */
+  fun meters(distance: Float): String {
+    val whole = distance.roundToInt()
+    if (abs(distance - whole) < 1e-3f) return whole.toString()
+    return String.format(Locale.ROOT, "%.2f", distance).trimEnd('0')
+  }
+
   /**
    * Width and height in meters of the quad that shows an eye of [eyeWidth] x [eyeHeight] (gutters included, as the
    * texture holds them) [angleDeg] wide at [distance].
    */
   fun quadSize(angleDeg: Float, eyeWidth: Int, eyeHeight: Int, distance: Float = DISTANCE_M): Pair<Float, Float> {
-    val width = 2f * distance * tan(Math.toRadians(angleDeg / 2.0)).toFloat()
+    val width = screenWidth(angleDeg, distance)
     return width to width * (eyeHeight + 2 * GUTTER) / (eyeWidth + 2 * GUTTER)
   }
 

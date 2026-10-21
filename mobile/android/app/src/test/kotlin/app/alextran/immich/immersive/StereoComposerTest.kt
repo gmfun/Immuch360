@@ -4,6 +4,7 @@ import com.meta.spatial.core.Vector3
 import kotlin.math.tan
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** The texture and the quad of a spatial photo (section 5.8 of the design). */
@@ -64,11 +65,36 @@ class StereoComposerTest {
   }
 
   @Test
-  fun `the thumbstick changes the angle by 6 degrees within 30 and 90`() {
+  fun `the thumbstick changes the angle by 6 degrees within 10 and 120`() {
     assertEquals(54f, StereoComposer.nextAngle(48f, 1))
     assertEquals(42f, StereoComposer.nextAngle(48f, -1))
-    assertEquals(90f, StereoComposer.nextAngle(88f, 1))
-    assertEquals(30f, StereoComposer.nextAngle(33f, -1))
+    assertEquals(120f, StereoComposer.nextAngle(118f, 1))
+    assertEquals(10f, StereoComposer.nextAngle(13f, -1))
+  }
+
+  @Test
+  fun `the Distance buttons step through the distances from the nearest one, within them`() {
+    assertEquals(2.5f, StereoComposer.nextDistance(2f, 1))
+    assertEquals(1.75f, StereoComposer.nextDistance(2f, -1))
+    assertEquals(0.75f, StereoComposer.nextDistance(0.75f, -1))
+    assertEquals(8f, StereoComposer.nextDistance(8f, 1))
+    assertEquals(3f, StereoComposer.nextDistance(2.4f, 1))
+  }
+
+  @Test
+  fun `a screen moved keeps its size in meters, so it looks larger nearer`() {
+    val angle = StereoComposer.angleAtDistance(48f, 2f, 1f)
+    assertEquals(StereoComposer.screenWidth(48f, 2f), StereoComposer.screenWidth(angle, 1f), 1e-4f)
+    assertTrue(angle > 48f)
+    assertEquals(48f, StereoComposer.angleAtDistance(48f, 2f, 2f), 1e-4f)
+    assertEquals(120f, StereoComposer.angleAtDistance(110f, 2f, 0.75f))
+  }
+
+  @Test
+  fun `distances read without trailing zeros`() {
+    assertEquals("2", StereoComposer.meters(2f))
+    assertEquals("1.5", StereoComposer.meters(1.5f))
+    assertEquals("0.75", StereoComposer.meters(0.75f))
   }
 
   @Test
@@ -118,9 +144,9 @@ class StereoComposerTest {
 
   @Test
   fun `a restored angle stays within the bounds of the thumbstick`() {
-    val wide = StereoPhotoChoices("u", 1L, threeD = true, angleDeg = 120f)
-    assertEquals(90f, wide.forPhoto("u", 1L)?.angleDeg)
-    assertEquals(30f, wide.copy(angleDeg = 10f).forPhoto("u", 1L)?.angleDeg)
+    val wide = StereoPhotoChoices("u", 1L, threeD = true, angleDeg = 150f)
+    assertEquals(120f, wide.forPhoto("u", 1L)?.angleDeg)
+    assertEquals(10f, wide.copy(angleDeg = 5f).forPhoto("u", 1L)?.angleDeg)
     assertNull(wide.copy(angleDeg = Float.NaN).forPhoto("u", 1L))
   }
 

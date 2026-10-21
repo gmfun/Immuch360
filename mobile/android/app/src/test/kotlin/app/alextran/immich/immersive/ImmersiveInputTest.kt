@@ -105,7 +105,15 @@ class ImmersiveInputTest {
       assertEquals(listOf(Action.TURN_LEFT), actions(controller = ButtonBits.ButtonThumbLL, panelVisible = visible))
       assertEquals(listOf(Action.TURN_RIGHT), actions(controller = ButtonBits.ButtonThumbLR, panelVisible = visible))
       assertEquals(listOf(Action.STICK_UP), actions(controller = ButtonBits.ButtonThumbRU, panelVisible = visible))
-      assertEquals(listOf(Action.STICK_DOWN), actions(controller = ButtonBits.ButtonThumbLD, panelVisible = visible))
+      assertEquals(listOf(Action.STICK_DOWN), actions(controller = ButtonBits.ButtonThumbRD, panelVisible = visible))
+      assertEquals(
+        listOf(Action.LEFT_STICK_UP),
+        actions(controller = ButtonBits.ButtonThumbLU, panelVisible = visible),
+      )
+      assertEquals(
+        listOf(Action.LEFT_STICK_DOWN),
+        actions(controller = ButtonBits.ButtonThumbLD, panelVisible = visible),
+      )
     }
   }
 

@@ -206,8 +206,9 @@ internal class ControllerEdges(private val log: (String) -> Unit = {}) {
  * - B or Y goes back to the app, and nothing else happens on that update;
  * - the right thumbstick left or right asks for the previous or the next media (the stick most headset galleries and
  *   players page with), the left thumbstick left or right turns the view, so that what is behind comes in front
- *   without turning the head, either stick up or down seeks a video or turns a photo; the viewer shows all of them
- *   on its small feedback line, never by bringing the info panel up;
+ *   without turning the head, the right stick up or down seeks a video, sizes a flat screen or turns a photo, the left
+ *   one up or down moves a flat screen farther or nearer (on any other media it does what the right one does); the
+ *   viewer shows all of them on its small feedback line, never by bringing the info panel up;
  * - A, X, grip or menu on a controller, and the menu gesture of a hand, show or hide the info panel; an index pinch
  *   (A or X of a hand) only shows a hidden panel, since a pinch on a panel button must not hide the panel it clicks;
  * - the trigger plays or pauses a video while the panel is hidden (on the panel it clicks a button).
@@ -215,7 +216,20 @@ internal class ControllerEdges(private val log: (String) -> Unit = {}) {
  * a hand: after the controllers wake up, the SDK may still take them for hands for a while.
  */
 internal object ImmersiveControls {
-  enum class Action { CLOSE, PREVIOUS, NEXT, TURN_LEFT, TURN_RIGHT, STICK_UP, STICK_DOWN, TOGGLE_PANEL, SHOW_PANEL, PLAY_PAUSE }
+  enum class Action {
+    CLOSE,
+    PREVIOUS,
+    NEXT,
+    TURN_LEFT,
+    TURN_RIGHT,
+    STICK_UP,
+    STICK_DOWN,
+    LEFT_STICK_UP,
+    LEFT_STICK_DOWN,
+    TOGGLE_PANEL,
+    SHOW_PANEL,
+    PLAY_PAUSE,
+  }
 
   /** The actions for [controllerBits] and [handBits] pressed on the same update, in the order to run them. */
   fun actionsFor(controllerBits: Int, handBits: Int, panelVisible: Boolean): List<Action> {
@@ -230,8 +244,10 @@ internal object ImmersiveControls {
       (controller and ButtonBits.ButtonThumbRR) != 0 -> actions += Action.NEXT
       (controller and ButtonBits.ButtonThumbLL) != 0 -> actions += Action.TURN_LEFT
       (controller and ButtonBits.ButtonThumbLR) != 0 -> actions += Action.TURN_RIGHT
-      (controller and (ButtonBits.ButtonThumbLU or ButtonBits.ButtonThumbRU)) != 0 -> actions += Action.STICK_UP
-      (controller and (ButtonBits.ButtonThumbLD or ButtonBits.ButtonThumbRD)) != 0 -> actions += Action.STICK_DOWN
+      (controller and ButtonBits.ButtonThumbRU) != 0 -> actions += Action.STICK_UP
+      (controller and ButtonBits.ButtonThumbRD) != 0 -> actions += Action.STICK_DOWN
+      (controller and ButtonBits.ButtonThumbLU) != 0 -> actions += Action.LEFT_STICK_UP
+      (controller and ButtonBits.ButtonThumbLD) != 0 -> actions += Action.LEFT_STICK_DOWN
     }
     val panelToggle =
       ButtonBits.ButtonA or ButtonBits.ButtonX or ButtonBits.ButtonMenu or ButtonBits.ButtonSqueezeL or
