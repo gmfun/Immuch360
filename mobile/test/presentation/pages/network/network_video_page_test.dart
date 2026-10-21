@@ -127,7 +127,14 @@ class _RecordingImmersiveApi extends ImmersiveApi {
     String? stereoPair,
     String? flatFormat,
   ) async {
-    shown.add({'url': url, 'isVideo': isVideo, 'title': title, 'layout': stereoLayout, 'coverage': coverage});
+    shown.add({
+      'url': url,
+      'isVideo': isVideo,
+      'title': title,
+      'layout': stereoLayout,
+      'coverage': coverage,
+      'flat': flatFormat,
+    });
     return true;
   }
 }
@@ -602,10 +609,17 @@ void main() {
       return shown;
     }
 
+    // A flat 3D video by its name is shown too, on a flat screen; the regular flat video is skipped
     expect(await request(1), isTrue);
-    expect(immersiveApi.shown.last['url'], server.urlOf('/stereo360.mp4').toString(), reason: 'a flat video between');
+    expect(immersiveApi.shown.last['url'], server.urlOf('/movie_sbs.mp4').toString());
+    expect(immersiveApi.shown.last['flat'], 'sbs');
+    expect(await request(1), isTrue);
+    expect(immersiveApi.shown.last['url'], server.urlOf('/stereo360.mp4').toString());
     expect(immersiveApi.shown.last['layout'], ImmersiveStereoLayout.topBottom);
+    expect(immersiveApi.shown.last['flat'], isNull);
     expect(await request(1), isFalse);
+    expect(await request(-1), isTrue);
+    expect(immersiveApi.shown.last['url'], server.urlOf('/movie_sbs.mp4').toString());
     expect(await request(-1), isTrue);
     expect(immersiveApi.shown.last['url'], server.urlOf('/trip360.mp4').toString());
     expect(immersiveApi.opened, hasLength(1), reason: 'navigation never starts the viewer');
