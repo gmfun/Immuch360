@@ -21,9 +21,15 @@
   <string name="immersive_previous">Previous</string>
   <string name="immersive_next">Next</string>
   <string name="immersive_turn">Turn</string>
-  <!-- Depth button of an RGBD photo: the separation of the eyes, in percent of the photo width -->
-  <string name="immersive_depth">Depth %1$d%%</string>
+  <!-- Depth row of an RGBD photo: the separation of the eyes, in percent of the photo width ("3.5%"), and the
+       screen plane, the depth that sits on the screen, 0% far to 100% near -->
+  <string name="immersive_depth">Depth %1$s</string>
   <string name="immersive_depth_off">Depth off</string>
+  <string name="immersive_depth_less">Less depth</string>
+  <string name="immersive_depth_more">More depth</string>
+  <string name="immersive_plane">Plane %1$d%%</string>
+  <string name="immersive_plane_less">Screen plane farther</string>
+  <string name="immersive_plane_more">Screen plane nearer</string>
   <string name="immersive_seek_back">10 seconds back</string>
   <string name="immersive_seek_forward">10 seconds forward</string>
   <string name="immersive_time">%1$s / %2$s</string>

@@ -320,10 +320,10 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   /** The flat video layer was placed in front of a known head pose, see [placeFlatVideo]. */
   private var flatPlacedWithHead = false
 
-  /** The color and the depth of the RGBD photo on the quad, null for any other media; see [cycleDepth]. */
+  /** The color and the depth of the RGBD photo on the quad, null for any other media; see [changeRgbd]. */
   private var rgbdPixels: RgbdPixels? = null
 
-  /** The eyes of the RGBD photo being made again at a new strength, see [cycleDepth]. */
+  /** The eyes of the RGBD photo being made again at a new strength or plane, see [changeRgbd]. */
   private var depthJob: Job? = null
 
   // Stereo quad of the spatial photos, see showStereoPhoto
@@ -353,7 +353,13 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   private var statusView: TextView? = null
   private var stereoView: Button? = null
   private var coverageView: Button? = null
-  private var depthView: Button? = null
+  private var rgbdRow: View? = null
+  private var depthView: TextView? = null
+  private var depthLessButton: Button? = null
+  private var depthMoreButton: Button? = null
+  private var planeView: TextView? = null
+  private var planeLessButton: Button? = null
+  private var planeMoreButton: Button? = null
   /** Turns the sphere by 90 degrees; hidden for a spatial photo, which has no sphere. */
   private var turnButton: View? = null
   private var playPauseButton: Button? = null
@@ -771,7 +777,13 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     statusView = root.findViewById(R.id.immersive_status)
     stereoView = root.findViewById(R.id.immersive_stereo)
     coverageView = root.findViewById(R.id.immersive_coverage)
+    rgbdRow = root.findViewById(R.id.immersive_rgbd_row)
     depthView = root.findViewById(R.id.immersive_depth)
+    depthLessButton = root.findViewById(R.id.immersive_depth_less)
+    depthMoreButton = root.findViewById(R.id.immersive_depth_more)
+    planeView = root.findViewById(R.id.immersive_plane)
+    planeLessButton = root.findViewById(R.id.immersive_plane_less)
+    planeMoreButton = root.findViewById(R.id.immersive_plane_more)
     turnButton = root.findViewById(R.id.immersive_turn)
     playPauseButton = root.findViewById(R.id.immersive_play_pause)
     seekRow = root.findViewById(R.id.immersive_seek_row)
@@ -787,7 +799,10 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     onPanelClick(playPauseButton) { togglePlayPause() }
     onPanelClick(stereoView) { cycleStereoLayout(1, fromPanel = true) }
     onPanelClick(coverageView) { toggleCoverage() }
-    onPanelClick(depthView) { cycleDepth() }
+    onPanelClick(depthLessButton) { changeRgbd(strengthStep = -1) }
+    onPanelClick(depthMoreButton) { changeRgbd(strengthStep = 1) }
+    onPanelClick(planeLessButton) { changeRgbd(planeStep = -1) }
+    onPanelClick(planeMoreButton) { changeRgbd(planeStep = 1) }
     onPanelClick(turnButton) { rotateSphere(YAW_STEP_DEGREES) }
     onPanelClick(seekBackButton) { seekBy(-1) }
     onPanelClick(seekForwardButton) { seekBy(1) }
@@ -801,7 +816,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     updateStereoView()
     updateCoverageView()
     updateTurnButton()
-    updateDepthView()
+    updateRgbdControls()
   }
 
   /** The turn button is there for the media shown on a sphere only. */
@@ -1903,9 +1918,10 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
           try {
             val flat = media.flatFormat
             val strength = rgbdStrength
+            val plane = rgbdPlane
             decodeMutex.withLock {
               withContext(Dispatchers.Default) {
-                holder.set(if (flat != null) decodeFlat(bytes, flat, strength) else decodeStereo(bytes, spec))
+                holder.set(if (flat != null) decodeFlat(bytes, flat, strength, plane) else decodeStereo(bytes, spec))
               }
             }
             ensureActive()
@@ -1998,10 +2014,10 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   /**
    * Both eyes of a flat 3D photo of [bytes] packed as [format] on one texture, off the main thread: each eye cut from
    * its half of the frame and drawn at the shape it is shown with (a squeezed eye stretched back), within the eye
-   * limits of the quad. An RGBD photo gets both eyes made from its color and its depth at [strength] (see
+   * limits of the quad. An RGBD photo gets both eyes made from its color and its depth at [strength] and [plane] (see
    * [rgbdTexture]). Null when the image does not decode.
    */
-  private fun decodeFlat(bytes: ByteArray, format: FlatFormat, strength: Float): StereoTexture? {
+  private fun decodeFlat(bytes: ByteArray, format: FlatFormat, strength: Float, plane: Float): StereoTexture? {
     val frame = ImmersiveMedia.decodeBytes(bytes) ?: return null
     var left: Bitmap? = null
     var right: Bitmap? = null
@@ -2024,7 +2040,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
         val depth = IntArray(width * height)
         left.getPixels(color, 0, width, 0, 0, width, height)
         right.getPixels(depth, 0, width, 0, 0, width, height)
-        return rgbdTexture(RgbdPixels(color, depth, width, height), strength)
+        return rgbdTexture(RgbdPixels(color, depth, width, height), strength, plane)
       }
       val texture = StereoComposer.compose(left, right, StereoComposer.Crop(0, 0, width))
       return StereoTexture(texture, width, height, hasSecondEye = true)
@@ -2037,12 +2053,13 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
 
   /**
    * Both eyes of an RGBD photo of [pixels] on one texture, made at [strength] (a total disparity of that fraction of
-   * the width, see [FlatStereo.synthesizeEyes]), off the main thread. Keeps [pixels] for the next strength.
+   * the width) with the depth [plane] on the screen (see [FlatStereo.synthesizeEyes]), off the main thread. Keeps
+   * [pixels] for the next strength or plane.
    */
-  private fun rgbdTexture(pixels: RgbdPixels, strength: Float): StereoTexture {
+  private fun rgbdTexture(pixels: RgbdPixels, strength: Float, plane: Float): StereoTexture {
     val (width, height) = pixels.width to pixels.height
     val (leftEye, rightEye) =
-      FlatStereo.synthesizeEyes(pixels.color, pixels.depth, width, height, maxDisparityPx = width * strength)
+      FlatStereo.synthesizeEyes(pixels.color, pixels.depth, width, height, maxDisparityPx = width * strength, plane)
     val left = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
     val right = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
     try {
@@ -2057,23 +2074,27 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   }
 
   /**
-   * The Depth button of an RGBD photo: the next strength (see [FlatStereo.nextStrength]), kept for the RGBD photos
-   * shown after this one, and the eyes made again at it from the pixels kept, the quad staying where it is. A click while the
-   * previous strength is still being made replaces it.
+   * The Depth and Plane buttons of an RGBD photo: the strength [strengthStep] steps and the screen plane [planeStep]
+   * steps away (see [FlatStereo.stepStrength] and [FlatStereo.stepPlane]), kept for the RGBD photos shown after this
+   * one, and the eyes made again from the pixels kept, the quad staying where it is. A click while the previous eyes
+   * are still being made replaces them. Nothing at a bound.
    */
-  private fun cycleDepth() {
+  private fun changeRgbd(strengthStep: Int = 0, planeStep: Int = 0) {
     val pixels = rgbdPixels ?: return
-    val strength = FlatStereo.nextStrength(rgbdStrength)
+    val strength = FlatStereo.stepStrength(rgbdStrength, strengthStep)
+    val plane = FlatStereo.stepPlane(rgbdPlane, planeStep)
+    if (strength == rgbdStrength && plane == rgbdPlane) return
     rgbdStrength = strength
-    Log.i(TAG, "RGBD depth strength is now $strength")
-    updateDepthView()
-    setStatus(depthText(strength))
+    rgbdPlane = plane
+    Log.i(TAG, "RGBD depth strength is now $strength, screen plane $plane")
+    updateRgbdControls()
+    setStatus("${depthText(strength)} · ${planeText(plane)}")
     depthJob?.cancel()
     depthJob =
       scope.launch {
         val holder = AtomicReference<StereoTexture?>()
         try {
-          withContext(Dispatchers.Default) { holder.set(rgbdTexture(pixels, strength)) }
+          withContext(Dispatchers.Default) { holder.set(rgbdTexture(pixels, strength, plane)) }
           ensureActive()
           // Another photo since the click: its own eyes are on the quad
           if (rgbdPixels !== pixels) return@launch
@@ -2081,27 +2102,38 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
         } catch (e: CancellationException) {
           throw e
         } catch (e: Throwable) {
-          Log.e(TAG, "RGBD eyes at strength $strength failed", e)
+          Log.e(TAG, "RGBD eyes at strength $strength, plane $plane failed", e)
         } finally {
           holder.getAndSet(null)?.bitmap?.recycle()
         }
       }
   }
 
-  /** "Depth 3%", or "Depth off" for no depth. */
+  /** "Depth 3.5%", or "Depth off" for no depth. */
   private fun depthText(strength: Float): String =
     if (strength <= 0f) getString(R.string.immersive_depth_off)
-    else getString(R.string.immersive_depth, (strength * 100).roundToInt())
+    else getString(R.string.immersive_depth, FlatStereo.strengthPercent(strength))
 
-  /** The Depth button is there for an RGBD photo only, once its eyes are on the quad. */
-  private fun updateDepthView() {
-    val view = depthView ?: return
+  /** "Plane 50%": the depth on the screen, 0% far (all of the photo comes out) to 100% near (all of it behind). */
+  private fun planeText(plane: Float): String = getString(R.string.immersive_plane, (plane * 100).roundToInt())
+
+  /**
+   * The Depth and Plane row is there for an RGBD photo only, once its eyes are on the quad; a minus or plus button at
+   * its bound is disabled.
+   */
+  private fun updateRgbdControls() {
+    val row = rgbdRow ?: return
     if (rgbdPixels == null) {
-      view.visibility = View.GONE
+      row.visibility = View.GONE
       return
     }
-    view.text = depthText(rgbdStrength)
-    view.visibility = View.VISIBLE
+    depthView?.text = depthText(rgbdStrength)
+    planeView?.text = planeText(rgbdPlane)
+    depthLessButton?.isEnabled = rgbdStrength > 0f
+    depthMoreButton?.isEnabled = rgbdStrength < FlatStereo.RGBD_MAX_DISPARITY - 1e-6f
+    planeLessButton?.isEnabled = rgbdPlane > 1e-6f
+    planeMoreButton?.isEnabled = rgbdPlane < 1f - 1e-6f
+    row.visibility = View.VISIBLE
   }
 
   /** The [region] of [frame] drawn on a new mutable bitmap of [width] x [height]. */
@@ -2162,7 +2194,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     stereoHasSecondEye = stereo.hasSecondEye
     rgbdPixels = stereo.rgbd
     applyStereoMode()
-    updateDepthView()
+    updateRgbdControls()
     if (refresh) return
     placeStereoQuad()
     stereoQuadEntity?.setComponent(Visible(true))
@@ -2241,7 +2273,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     depthJob?.cancel()
     depthJob = null
     rgbdPixels = null
-    updateDepthView()
+    updateRgbdControls()
     stereoQuadEntity?.setComponent(Visible(false))
     pendingStereo?.bitmap?.recycle()
     pendingStereo = null
@@ -3384,6 +3416,9 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
      * as the process, main thread only.
      */
     private var rgbdStrength = FlatStereo.RGBD_DISPARITY
+
+    /** Screen plane of the RGBD photos, as the Plane buttons left it; like [rgbdStrength]. */
+    private var rgbdPlane = FlatStereo.RGBD_SCREEN_PLANE
 
     /** Token of the last intent built by [intent], checked by parse. Lives as long as the process. */
     @Volatile private var launchToken: String? = null

@@ -1,7 +1,6 @@
 package app.alextran.immich.immersive
 
 import com.meta.spatial.runtime.StereoMode
-import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -38,15 +37,28 @@ internal object FlatStereo {
   const val RGBD_DISPARITY = 0.03f
 
   /**
-   * The depth strengths the Depth button of an RGBD photo steps through, as the total disparity of [RGBD_DISPARITY]:
-   * off (both eyes the color), then gentle to strong.
+   * The depth strengths the Depth − and + buttons of an RGBD photo step through, as the total disparity of
+   * [RGBD_DISPARITY]: from off (both eyes the color) to [RGBD_MAX_DISPARITY], [RGBD_DISPARITY_STEP] at a time. Past
+   * GAV Stereo Studio's own 8%, for trying: most people no longer fuse the eyes somewhere above it.
    */
-  val RGBD_STRENGTHS = floatArrayOf(0f, 0.01f, 0.02f, 0.03f, 0.04f, 0.06f)
+  const val RGBD_MAX_DISPARITY = 0.12f
+  const val RGBD_DISPARITY_STEP = 0.005f
 
-  /** The strength after [current] in [RGBD_STRENGTHS], wrapping around; the first one for a strength not in it. */
-  fun nextStrength(current: Float): Float {
-    val index = RGBD_STRENGTHS.indexOfFirst { abs(it - current) < 1e-4f }
-    return RGBD_STRENGTHS[(index + 1).mod(RGBD_STRENGTHS.size)]
+  /** What the Plane − and + buttons change the screen plane by, within 0 (far) and 1 (near). */
+  const val RGBD_PLANE_STEP = 0.1f
+
+  /** The strength [step] steps of [RGBD_DISPARITY_STEP] away from [current], on the grid of the steps, in bounds. */
+  fun stepStrength(current: Float, step: Int): Float =
+    (((current / RGBD_DISPARITY_STEP).roundToInt() + step) * RGBD_DISPARITY_STEP).coerceIn(0f, RGBD_MAX_DISPARITY)
+
+  /** The screen plane [step] steps of [RGBD_PLANE_STEP] away from [current], on the grid of the steps, in 0 to 1. */
+  fun stepPlane(current: Float, step: Int): Float =
+    (((current / RGBD_PLANE_STEP).roundToInt() + step) * RGBD_PLANE_STEP).coerceIn(0f, 1f)
+
+  /** [strength] as the Depth label shows it, in percent of the width with one decimal: "3.5%", "12%". */
+  fun strengthPercent(strength: Float): String {
+    val tenths = (strength * 1000).roundToInt()
+    return if (tenths % 10 == 0) "${tenths / 10}%" else "${tenths / 10}.${tenths % 10}%"
   }
 
   /** Depth of an RGBD photo that stays on the screen plane, 0 far to 1 near: what is nearer comes out of it. */

@@ -66,16 +66,30 @@ class FlatStereoTest {
   }
 
   @Test
-  fun `the Depth button steps from off to strong, then back to off`() {
-    var strength = FlatStereo.RGBD_DISPARITY
-    val seen = mutableListOf<Float>()
-    repeat(FlatStereo.RGBD_STRENGTHS.size) {
-      strength = FlatStereo.nextStrength(strength)
-      seen += strength
-    }
-    assertEquals(listOf(0.04f, 0.06f, 0f, 0.01f, 0.02f, 0.03f), seen)
-    // A strength from elsewhere starts the list again
-    assertEquals(0f, FlatStereo.nextStrength(0.05f), 0f)
+  fun `the Depth buttons step by half a percent, from off to 12 percent`() {
+    assertEquals(0.035f, FlatStereo.stepStrength(0.03f, 1), 1e-6f)
+    assertEquals(0.025f, FlatStereo.stepStrength(0.03f, -1), 1e-6f)
+    assertEquals(0f, FlatStereo.stepStrength(0.003f, -1), 0f)
+    assertEquals(0f, FlatStereo.stepStrength(0f, -1), 0f)
+    assertEquals(0.12f, FlatStereo.stepStrength(0.12f, 1), 1e-6f)
+    // From any value onto the grid of the steps
+    assertEquals(0.035f, FlatStereo.stepStrength(0.0312f, 1), 1e-6f)
+  }
+
+  @Test
+  fun `the Plane buttons step by a tenth, from far to near`() {
+    assertEquals(0.6f, FlatStereo.stepPlane(0.5f, 1), 1e-6f)
+    assertEquals(0.4f, FlatStereo.stepPlane(0.5f, -1), 1e-6f)
+    assertEquals(1f, FlatStereo.stepPlane(1f, 1), 0f)
+    assertEquals(0f, FlatStereo.stepPlane(0f, -1), 0f)
+  }
+
+  @Test
+  fun `the Depth label shows tenths of a percent only when there are some`() {
+    assertEquals("3%", FlatStereo.strengthPercent(0.03f))
+    assertEquals("3.5%", FlatStereo.strengthPercent(0.035f))
+    assertEquals("0.5%", FlatStereo.strengthPercent(0.005f))
+    assertEquals("12%", FlatStereo.strengthPercent(0.12f))
   }
 
   @Test

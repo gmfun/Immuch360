@@ -92,6 +92,67 @@
       android:tooltipText="@string/immersive_seek_forward" />
   </LinearLayout>
 
+  <!-- Depth of an RGBD photo, shown for those only, where the time bar of a video goes: the strength (the separation
+       of the eyes, off to 12% of the width, half a percent a click) and the screen plane (the depth that sits on the
+       screen, 0% far to 100% near, a tenth a click), each with its minus and plus buttons -->
+  <LinearLayout
+    android:id="@+id/immersive_rgbd_row"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="8dp"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:visibility="gone">
+    <Button
+      android:id="@+id/immersive_depth_less"
+      android:layout_width="56dp"
+      android:layout_height="wrap_content"
+      android:contentDescription="@string/immersive_depth_less"
+      android:text="−"
+      android:textSize="20sp" />
+    <TextView
+      android:id="@+id/immersive_depth"
+      android:layout_width="0dp"
+      android:layout_height="wrap_content"
+      android:layout_weight="1"
+      android:fontFeatureSettings="tnum"
+      android:gravity="center"
+      android:maxLines="1"
+      android:textColor="#FFE8EEFF"
+      android:textSize="17sp" />
+    <Button
+      android:id="@+id/immersive_depth_more"
+      android:layout_width="56dp"
+      android:layout_height="wrap_content"
+      android:layout_marginEnd="20dp"
+      android:contentDescription="@string/immersive_depth_more"
+      android:text="+"
+      android:textSize="20sp" />
+    <Button
+      android:id="@+id/immersive_plane_less"
+      android:layout_width="56dp"
+      android:layout_height="wrap_content"
+      android:contentDescription="@string/immersive_plane_less"
+      android:text="−"
+      android:textSize="20sp" />
+    <TextView
+      android:id="@+id/immersive_plane"
+      android:layout_width="0dp"
+      android:layout_height="wrap_content"
+      android:layout_weight="1"
+      android:fontFeatureSettings="tnum"
+      android:gravity="center"
+      android:maxLines="1"
+      android:textColor="#FFE8EEFF"
+      android:textSize="17sp" />
+    <Button
+      android:id="@+id/immersive_plane_more"
+      android:layout_width="56dp"
+      android:layout_height="wrap_content"
+      android:contentDescription="@string/immersive_plane_more"
+      android:text="+"
+      android:textSize="20sp" />
+  </LinearLayout>
   <!-- Previous and next media of the app (photos and videos), and play or pause for a video -->
   <LinearLayout
     android:layout_width="match_parent"
@@ -174,18 +235,6 @@
       android:textSize="17sp"
       android:visibility="gone" />
 
-    <!-- Depth strength of an RGBD photo, "Depth 3%", shown for those only. A click steps to the next strength:
-         off, 1, 2, 3, 4 and 6% -->
-    <Button
-      android:id="@+id/immersive_depth"
-      android:layout_width="wrap_content"
-      android:layout_height="wrap_content"
-      android:layout_gravity="center_vertical"
-      android:layout_marginEnd="12dp"
-      android:maxLines="1"
-      android:textAllCaps="false"
-      android:textSize="17sp"
-      android:visibility="gone" />
 
     <Button
       android:id="@+id/immersive_back"
