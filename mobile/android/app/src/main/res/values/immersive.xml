@@ -21,6 +21,9 @@
   <string name="immersive_previous">Previous</string>
   <string name="immersive_next">Next</string>
   <string name="immersive_turn">Turn</string>
+  <!-- Depth button of an RGBD photo: the separation of the eyes, in percent of the photo width -->
+  <string name="immersive_depth">Depth %1$d%%</string>
+  <string name="immersive_depth_off">Depth off</string>
   <string name="immersive_seek_back">10 seconds back</string>
   <string name="immersive_seek_forward">10 seconds forward</string>
   <string name="immersive_time">%1$s / %2$s</string>

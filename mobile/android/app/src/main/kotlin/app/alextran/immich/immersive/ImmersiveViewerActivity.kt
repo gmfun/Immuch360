@@ -247,7 +247,12 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     val eyeHeight: Int,
     /** Both eyes were decoded: false shows the left eye in 2D. */
     val hasSecondEye: Boolean,
+    /** The color and the depth of an RGBD photo the eyes were made from, to make them again at another strength. */
+    val rgbd: RgbdPixels? = null,
   )
+
+  /** The color and the depth of an RGBD photo, [width] x [height] ARGB pixels each, as the eyes are made from them. */
+  private class RgbdPixels(val color: IntArray, val depth: IntArray, val width: Int, val height: Int)
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
   private var request: MediaRequest? = null
@@ -315,6 +320,12 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   /** The flat video layer was placed in front of a known head pose, see [placeFlatVideo]. */
   private var flatPlacedWithHead = false
 
+  /** The color and the depth of the RGBD photo on the quad, null for any other media; see [cycleDepth]. */
+  private var rgbdPixels: RgbdPixels? = null
+
+  /** The eyes of the RGBD photo being made again at a new strength, see [cycleDepth]. */
+  private var depthJob: Job? = null
+
   // Stereo quad of the spatial photos, see showStereoPhoto
   private var stereoQuadEntity: Entity? = null
   private var stereoQuadMaterial: SceneMaterial? = null
@@ -342,6 +353,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   private var statusView: TextView? = null
   private var stereoView: Button? = null
   private var coverageView: Button? = null
+  private var depthView: Button? = null
   /** Turns the sphere by 90 degrees; hidden for a spatial photo, which has no sphere. */
   private var turnButton: View? = null
   private var playPauseButton: Button? = null
@@ -759,6 +771,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     statusView = root.findViewById(R.id.immersive_status)
     stereoView = root.findViewById(R.id.immersive_stereo)
     coverageView = root.findViewById(R.id.immersive_coverage)
+    depthView = root.findViewById(R.id.immersive_depth)
     turnButton = root.findViewById(R.id.immersive_turn)
     playPauseButton = root.findViewById(R.id.immersive_play_pause)
     seekRow = root.findViewById(R.id.immersive_seek_row)
@@ -774,6 +787,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     onPanelClick(playPauseButton) { togglePlayPause() }
     onPanelClick(stereoView) { cycleStereoLayout(1, fromPanel = true) }
     onPanelClick(coverageView) { toggleCoverage() }
+    onPanelClick(depthView) { cycleDepth() }
     onPanelClick(turnButton) { rotateSphere(YAW_STEP_DEGREES) }
     onPanelClick(seekBackButton) { seekBy(-1) }
     onPanelClick(seekForwardButton) { seekBy(1) }
@@ -787,6 +801,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     updateStereoView()
     updateCoverageView()
     updateTurnButton()
+    updateDepthView()
   }
 
   /** The turn button is there for the media shown on a sphere only. */
@@ -1887,9 +1902,10 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
           val holder = AtomicReference<StereoTexture?>()
           try {
             val flat = media.flatFormat
+            val strength = rgbdStrength
             decodeMutex.withLock {
               withContext(Dispatchers.Default) {
-                holder.set(if (flat != null) decodeFlat(bytes, flat) else decodeStereo(bytes, spec))
+                holder.set(if (flat != null) decodeFlat(bytes, flat, strength) else decodeStereo(bytes, spec))
               }
             }
             ensureActive()
@@ -1982,10 +1998,10 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   /**
    * Both eyes of a flat 3D photo of [bytes] packed as [format] on one texture, off the main thread: each eye cut from
    * its half of the frame and drawn at the shape it is shown with (a squeezed eye stretched back), within the eye
-   * limits of the quad. An RGBD photo gets both eyes made from its color and its depth (see
-   * [FlatStereo.synthesizeEyes]). Null when the image does not decode.
+   * limits of the quad. An RGBD photo gets both eyes made from its color and its depth at [strength] (see
+   * [rgbdTexture]). Null when the image does not decode.
    */
-  private fun decodeFlat(bytes: ByteArray, format: FlatFormat): StereoTexture? {
+  private fun decodeFlat(bytes: ByteArray, format: FlatFormat, strength: Float): StereoTexture? {
     val frame = ImmersiveMedia.decodeBytes(bytes) ?: return null
     var left: Bitmap? = null
     var right: Bitmap? = null
@@ -2002,17 +2018,14 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
         )
       left = cutEye(frame, leftRegion, width, height)
       right = cutEye(frame, rightRegion, width, height)
+      Log.i(TAG, "flat 3D photo $format: frame ${frame.width}x${frame.height}, eyes ${width}x$height")
       if (format == FlatFormat.RGBD) {
         val color = IntArray(width * height)
         val depth = IntArray(width * height)
         left.getPixels(color, 0, width, 0, 0, width, height)
         right.getPixels(depth, 0, width, 0, 0, width, height)
-        val (leftEye, rightEye) =
-          FlatStereo.synthesizeEyes(color, depth, width, height, maxDisparityPx = width * FlatStereo.RGBD_DISPARITY)
-        left.setPixels(leftEye, 0, width, 0, 0, width, height)
-        right.setPixels(rightEye, 0, width, 0, 0, width, height)
+        return rgbdTexture(RgbdPixels(color, depth, width, height), strength)
       }
-      Log.i(TAG, "flat 3D photo $format: frame ${frame.width}x${frame.height}, eyes ${width}x$height")
       val texture = StereoComposer.compose(left, right, StereoComposer.Crop(0, 0, width))
       return StereoTexture(texture, width, height, hasSecondEye = true)
     } finally {
@@ -2020,6 +2033,75 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
       left?.recycle()
       right?.recycle()
     }
+  }
+
+  /**
+   * Both eyes of an RGBD photo of [pixels] on one texture, made at [strength] (a total disparity of that fraction of
+   * the width, see [FlatStereo.synthesizeEyes]), off the main thread. Keeps [pixels] for the next strength.
+   */
+  private fun rgbdTexture(pixels: RgbdPixels, strength: Float): StereoTexture {
+    val (width, height) = pixels.width to pixels.height
+    val (leftEye, rightEye) =
+      FlatStereo.synthesizeEyes(pixels.color, pixels.depth, width, height, maxDisparityPx = width * strength)
+    val left = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val right = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    try {
+      left.setPixels(leftEye, 0, width, 0, 0, width, height)
+      right.setPixels(rightEye, 0, width, 0, 0, width, height)
+      val texture = StereoComposer.compose(left, right, StereoComposer.Crop(0, 0, width))
+      return StereoTexture(texture, width, height, hasSecondEye = true, rgbd = pixels)
+    } finally {
+      left.recycle()
+      right.recycle()
+    }
+  }
+
+  /**
+   * The Depth button of an RGBD photo: the next strength (see [FlatStereo.nextStrength]), kept for the RGBD photos
+   * shown after this one, and the eyes made again at it from the pixels kept, the quad staying where it is. A click while the
+   * previous strength is still being made replaces it.
+   */
+  private fun cycleDepth() {
+    val pixels = rgbdPixels ?: return
+    val strength = FlatStereo.nextStrength(rgbdStrength)
+    rgbdStrength = strength
+    Log.i(TAG, "RGBD depth strength is now $strength")
+    updateDepthView()
+    setStatus(depthText(strength))
+    depthJob?.cancel()
+    depthJob =
+      scope.launch {
+        val holder = AtomicReference<StereoTexture?>()
+        try {
+          withContext(Dispatchers.Default) { holder.set(rgbdTexture(pixels, strength)) }
+          ensureActive()
+          // Another photo since the click: its own eyes are on the quad
+          if (rgbdPixels !== pixels) return@launch
+          holder.getAndSet(null)?.let { applyStereoTexture(it, refresh = true) }
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Throwable) {
+          Log.e(TAG, "RGBD eyes at strength $strength failed", e)
+        } finally {
+          holder.getAndSet(null)?.bitmap?.recycle()
+        }
+      }
+  }
+
+  /** "Depth 3%", or "Depth off" for no depth. */
+  private fun depthText(strength: Float): String =
+    if (strength <= 0f) getString(R.string.immersive_depth_off)
+    else getString(R.string.immersive_depth, (strength * 100).roundToInt())
+
+  /** The Depth button is there for an RGBD photo only, once its eyes are on the quad. */
+  private fun updateDepthView() {
+    val view = depthView ?: return
+    if (rgbdPixels == null) {
+      view.visibility = View.GONE
+      return
+    }
+    view.text = depthText(rgbdStrength)
+    view.visibility = View.VISIBLE
   }
 
   /** The [region] of [frame] drawn on a new mutable bitmap of [width] x [height]. */
@@ -2038,9 +2120,10 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   /**
    * Uploads [stereo] as the texture of the quad, recycles its bitmap, destroys the previous texture, then shows the
    * quad in front of the user with the mode and the size of this photo. Kept for later while the material is not
-   * ready.
+   * ready. With [refresh], the same photo made again (an RGBD photo at another depth strength): the quad stays where
+   * the user left it, and the status line keeps the strength.
    */
-  private fun applyStereoTexture(stereo: StereoTexture) {
+  private fun applyStereoTexture(stereo: StereoTexture, refresh: Boolean = false) {
     val material = stereoQuadMaterial
     if (material == null) {
       Log.w(TAG, "stereo quad not ready yet, keeping the spatial photo for later")
@@ -2077,7 +2160,10 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     stereoTexture = texture
     stereoEyeSize = stereo.eyeWidth to stereo.eyeHeight
     stereoHasSecondEye = stereo.hasSecondEye
+    rgbdPixels = stereo.rgbd
     applyStereoMode()
+    updateDepthView()
+    if (refresh) return
     placeStereoQuad()
     stereoQuadEntity?.setComponent(Visible(true))
     updateStereoView()
@@ -2152,6 +2238,10 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
 
   /** Any other media: the quad goes away (its texture stays until the next spatial photo replaces it). */
   private fun hideStereoQuad() {
+    depthJob?.cancel()
+    depthJob = null
+    rgbdPixels = null
+    updateDepthView()
     stereoQuadEntity?.setComponent(Visible(false))
     pendingStereo?.bitmap?.recycle()
     pendingStereo = null
@@ -3288,6 +3378,12 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
      * keep the bearings and repeated while the stick is held, so that looking behind takes one long push.
      */
     private const val SNAP_TURN_DEGREES = 30f
+
+    /**
+     * Depth strength of the RGBD photos, as the Depth button left it: the next RGBD photo opens at it. Lives as long
+     * as the process, main thread only.
+     */
+    private var rgbdStrength = FlatStereo.RGBD_DISPARITY
 
     /** Token of the last intent built by [intent], checked by parse. Lives as long as the process. */
     @Volatile private var launchToken: String? = null

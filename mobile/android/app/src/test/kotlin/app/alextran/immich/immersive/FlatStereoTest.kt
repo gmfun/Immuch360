@@ -66,6 +66,28 @@ class FlatStereoTest {
   }
 
   @Test
+  fun `the Depth button steps from off to strong, then back to off`() {
+    var strength = FlatStereo.RGBD_DISPARITY
+    val seen = mutableListOf<Float>()
+    repeat(FlatStereo.RGBD_STRENGTHS.size) {
+      strength = FlatStereo.nextStrength(strength)
+      seen += strength
+    }
+    assertEquals(listOf(0.04f, 0.06f, 0f, 0.01f, 0.02f, 0.03f), seen)
+    // A strength from elsewhere starts the list again
+    assertEquals(0f, FlatStereo.nextStrength(0.05f), 0f)
+  }
+
+  @Test
+  fun `no depth strength leaves both eyes as the color`() {
+    val color = IntArray(6) { 0xFF000000.toInt() or (it * 40) }
+    val depth = IntArray(6) { if (it < 3) far else near }
+    val (left, right) = FlatStereo.synthesizeEyes(color, depth, 6, 1, maxDisparityPx = 0f)
+    assertArrayEquals(color, left)
+    assertArrayEquals(color, right)
+  }
+
+  @Test
   fun `depth on the screen plane leaves both eyes as the color`() {
     val color = IntArray(6) { 0xFF000000.toInt() or (it * 40) }
     val depth = IntArray(6) { 0xFF808080.toInt() }

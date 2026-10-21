@@ -1,6 +1,7 @@
 package app.alextran.immich.immersive
 
 import com.meta.spatial.runtime.StereoMode
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -35,6 +36,18 @@ internal object FlatStereo {
    * what GAV Stereo Studio exports by default, comfortable on a screen 2 m away.
    */
   const val RGBD_DISPARITY = 0.03f
+
+  /**
+   * The depth strengths the Depth button of an RGBD photo steps through, as the total disparity of [RGBD_DISPARITY]:
+   * off (both eyes the color), then gentle to strong.
+   */
+  val RGBD_STRENGTHS = floatArrayOf(0f, 0.01f, 0.02f, 0.03f, 0.04f, 0.06f)
+
+  /** The strength after [current] in [RGBD_STRENGTHS], wrapping around; the first one for a strength not in it. */
+  fun nextStrength(current: Float): Float {
+    val index = RGBD_STRENGTHS.indexOfFirst { abs(it - current) < 1e-4f }
+    return RGBD_STRENGTHS[(index + 1).mod(RGBD_STRENGTHS.size)]
+  }
 
   /** Depth of an RGBD photo that stays on the screen plane, 0 far to 1 near: what is nearer comes out of it. */
   const val RGBD_SCREEN_PLANE = 0.5f
