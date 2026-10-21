@@ -1,6 +1,8 @@
 package app.alextran.immich.immersive
 
 import com.meta.spatial.runtime.StereoMode
+import java.util.stream.IntStream
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -142,7 +144,8 @@ internal object FlatStereo {
    * depth less [plane], half to each eye in opposite directions, so that what is nearer than [plane] comes out of the
    * screen (it moves right in the left eye, left in the right eye). Where two pixels land on the same place the nearer
    * one wins; the holes this leaves beside the edges of near objects take the farther of their two neighbours, the
-   * background they uncover.
+   * background they uncover. Rows are independent: they are warped in [parallelism] bands at once, the same result
+   * whatever their number.
    */
   fun synthesizeEyes(
     color: IntArray,
@@ -151,25 +154,32 @@ internal object FlatStereo {
     height: Int,
     maxDisparityPx: Float,
     plane: Float = RGBD_SCREEN_PLANE,
+    parallelism: Int = Runtime.getRuntime().availableProcessors(),
   ): Pair<IntArray, IntArray> {
     require(width > 0 && height > 0 && color.size == width * height && depth.size == width * height) {
       "${color.size} color and ${depth.size} depth pixels for $width x $height"
     }
     val left = IntArray(width * height)
     val right = IntArray(width * height)
-    val near = FloatArray(width)
-    val shift = FloatArray(width)
-    val rowDepth = FloatArray(width)
-    for (y in 0 until height) {
-      val row = y * width
-      for (x in 0 until width) {
-        val d = (depth[row + x] and 0xFF) / 255f
-        rowDepth[x] = d
-        shift[x] = maxDisparityPx * (d - plane) / 2f
+    val bands = parallelism.coerceIn(1, height)
+    val rowsPerBand = (height + bands - 1) / bands
+    // Each band its own rows of the eyes, and its own scratch rows
+    val warpBand = { band: Int ->
+      val near = FloatArray(width)
+      val shift = FloatArray(width)
+      val rowDepth = FloatArray(width)
+      for (y in band * rowsPerBand until min(height, (band + 1) * rowsPerBand)) {
+        val row = y * width
+        for (x in 0 until width) {
+          val d = (depth[row + x] and 0xFF) / 255f
+          rowDepth[x] = d
+          shift[x] = maxDisparityPx * (d - plane) / 2f
+        }
+        warpRow(color, row, width, rowDepth, shift, 1f, left, near)
+        warpRow(color, row, width, rowDepth, shift, -1f, right, near)
       }
-      warpRow(color, row, width, rowDepth, shift, 1f, left, near)
-      warpRow(color, row, width, rowDepth, shift, -1f, right, near)
     }
+    if (bands == 1) warpBand(0) else IntStream.range(0, bands).parallel().forEach { warpBand(it) }
     return left to right
   }
 

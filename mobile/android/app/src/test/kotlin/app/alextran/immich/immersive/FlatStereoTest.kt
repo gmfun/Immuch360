@@ -138,6 +138,20 @@ class FlatStereoTest {
   }
 
   @Test
+  fun `the eyes are the same whether the rows are warped one band or several at once`() {
+    val width = 37
+    val height = 23
+    val color = IntArray(width * height) { 0xFF000000.toInt() or (it * 7919) }
+    val depth = IntArray(width * height) { 0xFF000000.toInt() or ((it * 31 + it / width * 17) and 0xFF) }
+    val single = FlatStereo.synthesizeEyes(color, depth, width, height, maxDisparityPx = 6f, parallelism = 1)
+    for (parallelism in listOf(2, 4, 8, 64)) {
+      val bands = FlatStereo.synthesizeEyes(color, depth, width, height, maxDisparityPx = 6f, parallelism = parallelism)
+      assertArrayEquals("left, $parallelism bands", single.first, bands.first)
+      assertArrayEquals("right, $parallelism bands", single.second, bands.second)
+    }
+  }
+
+  @Test
   fun `each row is warped on its own`() {
     val color = intArrayOf(background, foreground, background, background) + IntArray(4) { background }
     val depth = intArrayOf(far, near, far, far) + IntArray(4) { far }

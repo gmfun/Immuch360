@@ -13,6 +13,7 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import android.view.View
@@ -1990,8 +1991,9 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   /**
    * Shows [media], an Apple spatial photo or a flat 3D photo, on the stereo quad: no sphere around (black), its file
    * read whole (a few MB: the bridge or the server original, or the file on the headset), both eyes decoded (see
-   * [decodeStereo] and [decodeFlat]) and set side by side on one texture. A pair that does not read, or a second eye
-   * that does not decode, shows the left eye in 2D.
+   * [decodeStereoPhoto]) and set side by side on one texture. A pair that does not read, or a second eye that does not
+   * decode, shows the left eye in 2D. A flat photo of the server shows from its preview first, until the original is
+   * there.
    */
   private fun showStereoPhoto(media: MediaRequest) {
     stopVideo()
@@ -2011,37 +2013,81 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     setStatus(getString(R.string.immersive_loading))
     loadJob =
       scope.launch {
-        try {
-          val local = ImmersiveMedia.localFileFor(media.url)
-          val bytes = if (local != null) withContext(Dispatchers.IO) { local.readBytes() } else download(media.url)
-          Log.i(TAG, "spatial photo: ${bytes.size} bytes")
-          val holder = AtomicReference<StereoTexture?>()
+        val local = ImmersiveMedia.localFileFor(media.url)
+        // A flat photo on the server shows its preview first, made 3D the same way, while its original downloads: an
+        // RGBD original is a large PNG, slow to download and to decode. Not a spatial photo, whose preview has one eye.
+        val previewUrl =
+          if (media.flatFormat != null && local == null) ImmersiveMedia.previewUrlFor(media.url) else null
+        var previewShown = false
+        if (previewUrl != null) {
           try {
-            val flat = media.flatFormat
-            val strength = rgbdStrength
-            val plane = rgbdPlane
-            decodeMutex.withLock {
-              withContext(Dispatchers.Default) {
-                // A 2D photo is the left eye alone, as a spatial photo without its pair
-                holder.set(
-                  if (flat != null && flat != FlatFormat.MONO) decodeFlat(bytes, flat, strength, plane)
-                  else decodeStereo(bytes, spec)
-                )
-              }
+            val started = SystemClock.elapsedRealtime()
+            val texture = decodeStereoPhoto(download(previewUrl), media)
+            if (texture != null) {
+              val (width, height) = texture.eyeWidth to texture.eyeHeight
+              applyStereoTexture(texture)
+              previewShown = true
+              setStatus(getString(R.string.immersive_preview_loading_full, width, height))
+              Log.i(TAG, "flat photo: preview ${width}x$height in ${SystemClock.elapsedRealtime() - started} ms")
             }
-            ensureActive()
-            val texture = holder.getAndSet(null) ?: throw IOException("this image cannot be read or decoded")
-            applyStereoTexture(texture)
-          } finally {
-            holder.getAndSet(null)?.bitmap?.recycle()
+          } catch (e: CancellationException) {
+            throw e
+          } catch (e: Throwable) {
+            Log.w(TAG, "flat photo: preview failed: ${e.message}", e)
+          }
+        }
+        try {
+          val started = SystemClock.elapsedRealtime()
+          val bytes = if (local != null) withContext(Dispatchers.IO) { local.readBytes() } else download(media.url)
+          val read = SystemClock.elapsedRealtime()
+          Log.i(TAG, "spatial photo: ${bytes.size} bytes in ${read - started} ms")
+          val texture = decodeStereoPhoto(bytes, media) ?: throw IOException("this image cannot be read or decoded")
+          Log.i(TAG, "spatial photo: decoded in ${SystemClock.elapsedRealtime() - read} ms")
+          // Over the preview, where the user may have moved or resized it already
+          applyStereoTexture(texture, refresh = previewShown)
+          if (previewShown) {
+            setStatus(getString(R.string.immersive_full_resolution, texture.eyeWidth, texture.eyeHeight))
+            scheduleInfoHide()
           }
         } catch (e: CancellationException) {
           throw e
         } catch (e: Throwable) {
           Log.e(TAG, "spatial photo failed", e)
-          showError(getString(R.string.immersive_error_photo, e.message ?: e.javaClass.simpleName))
+          if (previewShown) {
+            showStatus(getString(R.string.immersive_preview_only, e.message ?: e.javaClass.simpleName))
+            scheduleInfoHide()
+          } else {
+            showError(getString(R.string.immersive_error_photo, e.message ?: e.javaClass.simpleName))
+          }
         }
       }
+  }
+
+  /**
+   * Both eyes of [media] from [bytes] on one texture, off the main thread and one decode at a time: a flat 3D photo by
+   * [decodeFlat] at the depth strength and plane of now, a spatial photo by [decodeStereo], and a 2D photo as the left
+   * eye alone, as a spatial photo without its pair. Null when the image does not decode. The texture is the caller's;
+   * a load cancelled meanwhile recycles it.
+   */
+  private suspend fun decodeStereoPhoto(bytes: ByteArray, media: MediaRequest): StereoTexture? {
+    val flat = media.flatFormat
+    val strength = rgbdStrength
+    val plane = rgbdPlane
+    val holder = AtomicReference<StereoTexture?>()
+    try {
+      decodeMutex.withLock {
+        withContext(Dispatchers.Default) {
+          holder.set(
+            if (flat != null && flat != FlatFormat.MONO) decodeFlat(bytes, flat, strength, plane)
+            else decodeStereo(bytes, media.stereoPair)
+          )
+        }
+      }
+      coroutineContext.ensureActive()
+      return holder.getAndSet(null)
+    } finally {
+      holder.getAndSet(null)?.bitmap?.recycle()
+    }
   }
 
   /**
