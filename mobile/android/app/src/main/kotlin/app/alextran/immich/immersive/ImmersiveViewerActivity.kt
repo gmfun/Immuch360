@@ -703,7 +703,8 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
                 Equirect360ShapeOptions(radius = VIDEO_SPHERE_RADIUS)
               },
             display = PixelDisplayOptions(width = VIDEO_PANEL_WIDTH_PX, height = VIDEO_PANEL_HEIGHT_PX),
-            rendering = MediaPanelRenderOptions(stereoMode = StereoMode.None, zIndex = -1),
+            rendering =
+              MediaPanelRenderOptions(stereoMode = StereoMode.None, layerFilters = LAYER_FILTERS, zIndex = -1),
           )
         },
         panelSetup = { panel, _ ->
@@ -3653,10 +3654,11 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
 
     /**
      * Size of the swapchain of the video panel. A player that stitches draws into it with OpenGL and is told this size
-     * (see attachVideoSurface); the decoder of any other video writes its own size there.
+     * (see attachVideoSurface); the decoder of any other video writes its own size there. 5.7K, 16 pixels a degree: the
+     * detail of a 5.7K dual fisheye camera, where 3840 lost a third of it.
      */
-    private const val VIDEO_PANEL_WIDTH_PX = 3840
-    private const val VIDEO_PANEL_HEIGHT_PX = 1920
+    private const val VIDEO_PANEL_WIDTH_PX = 5760
+    private const val VIDEO_PANEL_HEIGHT_PX = 2880
 
     /** Surface of the flat video layer: the frame of a flat 3D video is scaled to it, the quad gives the shape back. */
     private const val FLAT_VIDEO_PANEL_WIDTH_PX = 3840
@@ -3673,7 +3675,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     private const val PHOTO_PANEL_HEIGHT_PX = 2560
 
     /**
-     * Compositor filters of the flat layers: quality super sampling for a picture larger than the screen pixels it
+     * Compositor filters of the video and photo layers: quality super sampling for a picture larger than the screen pixels it
      * covers, quality sharpening for a smaller one, the compositor picking the one that applies.
      */
     private val LAYER_FILTERS = LayerFilters.HIGHEST_QUALITY or LayerFilters.AUTO_FILTER
