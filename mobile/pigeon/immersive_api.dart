@@ -40,7 +40,11 @@ abstract class ImmersiveApi {
   /// the first frames) or when the original fails; null when there is none or when the user chose to always play
   /// the original. [stereoPair] is null, or the JSON of an Apple spatial photo (docs
   /// 18-design-build19-sources-and-spatial.md section 5.6): the viewer then shows both eyes on a flat quad in front of
-  /// the user instead of a sphere.
+  /// the user instead of a sphere. [flatFormat] is null for a 360° media, or how a flat 3D media packs its eyes:
+  /// "sbs", "halfSbs" (side by side, full or squeezed eyes), "tb", "halfTb" (top and bottom), or "rgbd" (a photo
+  /// with its color on the left and its depth on the right, white near, from which the headset makes both eyes). The
+  /// viewer shows it on a flat screen in front of the user, a photo on the stereo quad and a video on a flat video
+  /// layer.
   void open(
     String url,
     Map<String, String> headers,
@@ -54,12 +58,14 @@ abstract class ImmersiveApi {
     String? fallbackUrl,
     String? rawProjection,
     String? stereoPair,
+    String? flatFormat,
   );
 
   /// Answers [ImmersiveEvents.requestAdjacent]: shows [url] in place of the media of the viewer that asked, identified
   /// by [requestId]. Returns false, and shows nothing, when that viewer is gone, closing, or no longer waiting for
   /// this request (the user pressed Back, or the request timed out meanwhile), so that Flutter does not count the
-  /// media as shown. Never starts the viewer. [stereoPair] is the JSON of an Apple spatial photo, as for [open].
+  /// media as shown. Never starts the viewer. [stereoPair] is the JSON of an Apple spatial photo and [flatFormat] the
+  /// packing of a flat 3D media, as for [open].
   bool showAdjacent(
     int requestId,
     String url,
@@ -70,6 +76,7 @@ abstract class ImmersiveApi {
     String? fallbackUrl,
     String? rawProjection,
     String? stereoPair,
+    String? flatFormat,
   );
 }
 

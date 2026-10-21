@@ -7,6 +7,7 @@ import 'package:immich_mobile/data/store.dart';
 import 'package:immich_mobile/desktop/window/full_screen.dart';
 import 'package:immich_mobile/domain/models/apple_spatial.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart';
+import 'package:immich_mobile/domain/models/flat_stereo.dart';
 import 'package:immich_mobile/domain/models/sphere_coverage.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/datetime_extensions.dart';
@@ -106,12 +107,24 @@ class ViewerTopAppBar extends ConsumerWidget implements PreferredSizeWidget {
     final stereoPair = isHorizonOs && asset.isImage && isHeifName(asset.name)
         ? ref.watch(appleSpatialInfoProvider(asset)).valueOrNull?.photo
         : null;
+    // A flat 3D photo or video (side by side, top and bottom, or a photo with its depth beside it, as its name tells)
+    // shows in 3D on a flat screen in the immersive viewer of a Meta Quest; the other devices show it as it is. A 360°
+    // media keeps its 360° button, which the name cannot override.
+    final flatFormat = isHorizonOs && stereoPair == null && !hasPanoramaView ? flatStereoFormatOf(asset) : null;
     final view3dButton = stereoPair != null
         ? IconButton(
             key: const Key('apple_spatial_view_3d'),
             icon: const Icon(Icons.view_in_ar_rounded),
             tooltip: context.t.apple_spatial_view_3d,
             onPressed: () => unawaited(_openStereoPhoto(context, ref, asset, stereoPair)),
+          )
+        : flatFormat != null
+        ? IconButton(
+            key: const Key('flat_stereo_view_3d'),
+            icon: const Icon(Icons.view_in_ar_rounded),
+            tooltip: context.t.apple_spatial_view_3d,
+            // On the headset, the 360° opener goes to the immersive viewer, which takes the flat format from the name
+            onPressed: () => unawaited(open360View(context, ref, asset)),
           )
         : null;
 

@@ -89,7 +89,7 @@ internal class ImmersiveInputSystem(
  * A controller seen for the first time, one that becomes active or inactive, and one that switches between hand and
  * controller start again from the buttons they hold at that update: nothing counts as pressed then, so that neither a
  * stale state from before a sleep nor a pinch held while the hands take over fires an action. [log] receives each of
- * those transitions, for logcat. The right thumbstick held left or right repeats its press (see [TURN_BITS]): a
+ * those transitions, for logcat. The left thumbstick held left or right repeats its press (see [TURN_BITS]): a
  * sweep around the sphere is one long push, not a series of flicks. Pure: no Spatial SDK call, unit tested.
  */
 internal class ControllerEdges(private val log: (String) -> Unit = {}) {
@@ -104,7 +104,7 @@ internal class ControllerEdges(private val log: (String) -> Unit = {}) {
   /**
    * The buttons of controller [id] pressed since its previous update, given whether it is [active], its [type] and the
    * buttons it holds now at [nowMs] (uptime). A thumbstick push reports one direction only, see [firstDirectionOnly].
-   * A turn direction of the right thumbstick ([TURN_BITS]) still held [TURN_REPEAT_DELAY_MS] after its press is
+   * A turn direction of the left thumbstick ([TURN_BITS]) still held [TURN_REPEAT_DELAY_MS] after its press is
    * reported again, then every [TURN_REPEAT_INTERVAL_MS], until the stick comes back.
    */
   fun pressed(id: Long, active: Boolean, type: String, buttons: Int, nowMs: Long = 0L): Int {
@@ -133,7 +133,7 @@ internal class ControllerEdges(private val log: (String) -> Unit = {}) {
     return down or turnRepeat(seen, down, buttons, nowMs)
   }
 
-  /** The turn direction to report again because the right thumbstick is still held, or 0. */
+  /** The turn direction to report again because the left thumbstick is still held, or 0. */
   private fun turnRepeat(seen: Seen, down: Int, buttons: Int, nowMs: Long): Int {
     val pressedTurn = down and TURN_BITS
     if (pressedTurn != 0) {
@@ -188,8 +188,11 @@ internal class ControllerEdges(private val log: (String) -> Unit = {}) {
     val RIGHT_STICK =
       ButtonBits.ButtonThumbRL or ButtonBits.ButtonThumbRR or ButtonBits.ButtonThumbRU or ButtonBits.ButtonThumbRD
 
-    /** The right thumbstick left or right turns the view, and keeps turning while held. */
-    val TURN_BITS = ButtonBits.ButtonThumbRL or ButtonBits.ButtonThumbRR
+    /**
+     * The left thumbstick left or right turns the view, and keeps turning while held. The right one changes the media
+     * and never repeats: a held push must not skip through a whole album.
+     */
+    val TURN_BITS = ButtonBits.ButtonThumbLL or ButtonBits.ButtonThumbLR
 
     /** A push turns once at once; held past this delay it turns again, then at this interval. */
     const val TURN_REPEAT_DELAY_MS = 350L
@@ -201,9 +204,9 @@ internal class ControllerEdges(private val log: (String) -> Unit = {}) {
  * What the immersive viewer does with the buttons just pressed (ImmersiveInputSystem.Listener.onButtonsPressed),
  * decided apart from the viewer so that it can be tested:
  * - B or Y goes back to the app, and nothing else happens on that update;
- * - the left thumbstick left or right asks for the previous or the next media, the right thumbstick left or right
- *   turns the view (the way the right thumbstick turns in most headset apps, so that what is behind comes in front
- *   without turning the head), either stick up or down seeks a video or turns a photo; the viewer shows all of them
+ * - the right thumbstick left or right asks for the previous or the next media (the stick most headset galleries and
+ *   players page with), the left thumbstick left or right turns the view, so that what is behind comes in front
+ *   without turning the head, either stick up or down seeks a video or turns a photo; the viewer shows all of them
  *   on its small feedback line, never by bringing the info panel up;
  * - A, X, grip or menu on a controller, and the menu gesture of a hand, show or hide the info panel; an index pinch
  *   (A or X of a hand) only shows a hidden panel, since a pinch on a panel button must not hide the panel it clicks;
@@ -223,10 +226,10 @@ internal object ImmersiveControls {
     if ((controller and (ButtonBits.ButtonB or ButtonBits.ButtonY)) != 0) return listOf(Action.CLOSE)
     val actions = mutableListOf<Action>()
     when {
-      (controller and ButtonBits.ButtonThumbLL) != 0 -> actions += Action.PREVIOUS
-      (controller and ButtonBits.ButtonThumbLR) != 0 -> actions += Action.NEXT
-      (controller and ButtonBits.ButtonThumbRL) != 0 -> actions += Action.TURN_LEFT
-      (controller and ButtonBits.ButtonThumbRR) != 0 -> actions += Action.TURN_RIGHT
+      (controller and ButtonBits.ButtonThumbRL) != 0 -> actions += Action.PREVIOUS
+      (controller and ButtonBits.ButtonThumbRR) != 0 -> actions += Action.NEXT
+      (controller and ButtonBits.ButtonThumbLL) != 0 -> actions += Action.TURN_LEFT
+      (controller and ButtonBits.ButtonThumbLR) != 0 -> actions += Action.TURN_RIGHT
       (controller and (ButtonBits.ButtonThumbLU or ButtonBits.ButtonThumbRU)) != 0 -> actions += Action.STICK_UP
       (controller and (ButtonBits.ButtonThumbLD or ButtonBits.ButtonThumbRD)) != 0 -> actions += Action.STICK_DOWN
     }

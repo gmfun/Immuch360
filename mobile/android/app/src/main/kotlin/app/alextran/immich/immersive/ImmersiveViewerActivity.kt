@@ -6,6 +6,9 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -23,6 +26,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -126,10 +130,11 @@ private const val RAW_PROJECTION_TAG = "RawProjection"
  * carry the launch token of the last intent built by [intent]: anything else shows nothing.
  *
  * Controllers: trigger plays or pauses a video while the info panel is hidden (on the panel it clicks),
- * B or Y goes back to the 2D app, A, X, grip or menu show or hide the info panel. Thumbstick left or
+ * B or Y goes back to the 2D app, A, X, grip or menu show or hide the info panel. The right thumbstick left or
  * right opens the previous or the next media of the app without leaving the immersive view: Flutter
- * picks it and the viewer shows it in place (see [navigate]). Thumbstick up or down seeks 10 seconds forward or
- * back in a video, and turns a photo by 90 degrees (logged, to find the right SKYBOX_YAW_DEGREES).
+ * picks it and the viewer shows it in place (see [navigate]); the left one turns the view. Thumbstick up
+ * or down seeks 10 seconds forward or back in a video, and turns a photo by 90 degrees (logged, to find
+ * the right SKYBOX_YAW_DEGREES).
  * The thumbstick never brings the info panel up: with the panel hidden, a one line feedback panel shows the new
  * time, the title of the new media or the angle for a moment (see [showFeedback]). The decisions are in
  * [ImmersiveControls]. The 3D layout is on the info panel only. Hands and controller rays: the buttons of the info
@@ -157,7 +162,14 @@ private const val RAW_PROJECTION_TAG = "RawProjection"
  * decoded ([StereoHeicDecoder]) and shown side by side on a flat quad 2 m in front of the user, whose material gives
  * each eye its half (StereoMode.LeftRight, the mechanism of the 3D photos on the skybox). The 3D button switches to the
  * left eye for both eyes (MonoLeft), the thumbstick up or down resizes the quad and left or right brings it in front
- * of the gaze again; previous and next are not available for it yet. See [showStereoPhoto].
+ * of the gaze again. See [showStereoPhoto].
+ *
+ * A flat 3D media comes with its flatFormat (see [FlatFormat]): a photo side by side or top and bottom goes on the
+ * stereo quad, each eye cut from its half of the frame and stretched back when squeezed, and an RGBD photo (color and
+ * depth side by side) gets both eyes made from its depth ([FlatStereo.synthesizeEyes]). A video plays on a flat video
+ * layer in front of the user instead of the sphere, whose stereo mode gives each eye its half of the frame (see
+ * [applyFlatVideoShape]); the 3D button switches it to the first eye for both. The left thumbstick brings the screen in
+ * front of the gaze again.
  */
 class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listener {
   private data class MediaRequest(
@@ -198,17 +210,34 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
      * sphere. Null for any other media, and ignored for a video.
      */
     val stereoPairJson: String? = null,
+    /**
+     * How a flat 3D media packs its eyes (see [FlatFormat]), shown on a flat screen rather than on a sphere: a photo on
+     * the stereo quad, a video on the flat video layer. Null for a 360° media.
+     */
+    val flatFormatWire: String? = null,
   ) {
     /** A raw 360° video, drawn as a mono 360° video whatever the 3D layout and the field of view say. */
     val isRawVideo: Boolean
       get() = isVideo && rawProjection != null
 
-    /** An Apple spatial photo: on the stereo quad, in 3D when its pair reads, flat otherwise. */
+    /** The packing of a flat 3D media, null for a 360° media or a format this viewer does not know. */
+    val flatFormat: FlatFormat? by lazy { FlatFormat.parse(flatFormatWire) }
+
+    /**
+     * A photo on the stereo quad: an Apple spatial photo, in 3D when its pair reads, flat otherwise, or a flat 3D
+     * photo.
+     */
     val isStereoPhoto: Boolean
-      get() = !isVideo && stereoPairJson != null
+      get() = !isVideo && (stereoPairJson != null || flatFormat != null)
+
+    /** A flat 3D video, on the flat video layer in front of the user. */
+    val isFlatVideo: Boolean
+      get() = isVideo && rawProjection == null && flatFormat != null
 
     /** The two eyes of a spatial photo, null when its JSON does not read (the photo then shows flat on the quad). */
-    val stereoPair: StereoPairSpec? by lazy { if (isStereoPhoto) StereoPairSpec.parse(stereoPairJson) else null }
+    val stereoPair: StereoPairSpec? by lazy {
+      if (!isVideo && stereoPairJson != null) StereoPairSpec.parse(stereoPairJson) else null
+    }
   }
 
   /** The texture of a spatial photo: both eyes of [eyeWidth] x [eyeHeight] side by side, see StereoComposer. */
@@ -274,6 +303,17 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   private var coverage = ImmersiveSphereCoverage.FULL
   /** Scene object of the video panel, to change the stereo mode and the shape of its compositor layer. */
   private var videoPanel: PanelSceneObject? = null
+
+  /** The flat video layer of a flat 3D video, a quad in front of the user; its panel, Surface and entity. */
+  private var flatVideoPanel: PanelSceneObject? = null
+  private var flatVideoSurface: Surface? = null
+  private var flatVideoEntity: Entity? = null
+
+  /** Size of the frames of the flat 3D video playing, from the player; null until it tells. */
+  private var flatVideoSize: Pair<Int, Int>? = null
+
+  /** The flat video layer was placed in front of a known head pose, see [placeFlatVideo]. */
+  private var flatPlacedWithHead = false
 
   // Stereo quad of the spatial photos, see showStereoPhoto
   private var stereoQuadEntity: Entity? = null
@@ -529,6 +569,12 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
       createHalfSphere()
       createStereoQuad()
       videoEntity = Entity.create(Panel(R.id.immersive_video_panel), Transform(), Visible(false))
+      flatVideoEntity =
+        Entity.create(
+          Panel(R.id.immersive_flat_video_panel),
+          Transform(Pose(Vector3(0f, DEFAULT_EYE_HEIGHT, StereoComposer.DISTANCE_M), Quaternion(0f, 0f, 0f))),
+          Visible(false),
+        )
       infoEntity =
         Entity.createPanelEntity(
           R.id.immersive_info_panel,
@@ -583,7 +629,8 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
         surfaceConsumer = { _, surface ->
           Log.i(TAG, "video surface ready")
           videoSurface = surface
-          player?.let { attachVideoSurface(it, surface) }
+          // A flat 3D video plays on the flat layer, see activeVideoSurface
+          player?.let { if (request?.isFlatVideo != true) attachVideoSurface(it, surface) }
         },
         settingsCreator = {
           MediaPanelSettings(
@@ -601,6 +648,29 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
           videoPanel = panel
           // After the panel creation returns: a stereoscopic or VR180 video may already be waiting for this panel
           scope.launch(Dispatchers.Main) { applyVideoShape() }
+        },
+      ),
+      // Flat 3D video: a quad compositor layer in front of the user, as MediaPlayerSample shows its 3D movies. Created
+      // mono at 16:9, the stereo mode and the shape of each video set afterwards (applyFlatVideoShape). The frame is
+      // scaled to the surface, the quad gives each eye its shape back.
+      VideoSurfacePanelRegistration(
+        R.id.immersive_flat_video_panel,
+        surfaceConsumer = { _, surface ->
+          Log.i(TAG, "flat video surface ready")
+          flatVideoSurface = surface
+          player?.let { if (request?.isFlatVideo == true) attachVideoSurface(it, surface) }
+        },
+        settingsCreator = {
+          val (width, height) = flatScreenSize(16f / 9f)
+          MediaPanelSettings(
+            shape = QuadShapeOptions(width = width, height = height),
+            display = PixelDisplayOptions(width = FLAT_VIDEO_PANEL_WIDTH_PX, height = FLAT_VIDEO_PANEL_HEIGHT_PX),
+            rendering = MediaPanelRenderOptions(stereoMode = StereoMode.None),
+          )
+        },
+        panelSetup = { panel, _ ->
+          flatVideoPanel = panel
+          scope.launch(Dispatchers.Main) { applyFlatVideoShape() }
         },
       ),
     )
@@ -663,7 +733,11 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
       Log.i(TAG, "half sphere media (VR180), coverage ${media.coverage}")
     }
     if (media.isRawVideo) Log.i(TAG, "raw 360 video, stitched on the headset")
-    if (media.isStereoPhoto) Log.i(TAG, "spatial photo, on the stereo quad: ${media.stereoPair ?: "pair unreadable"}")
+    when {
+      media.flatFormat != null ->
+        Log.i(TAG, "flat 3D ${if (media.isVideo) "video" else "photo"}, ${media.flatFormat} on a flat screen")
+      media.isStereoPhoto -> Log.i(TAG, "spatial photo, on the stereo quad: ${media.stereoPair ?: "pair unreadable"}")
+    }
     titleView?.text = media.title
     updateVideoControls()
     updateStereoView()
@@ -717,7 +791,8 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
 
   /** The turn button is there for the media shown on a sphere only. */
   private fun updateTurnButton() {
-    turnButton?.visibility = if (request?.isStereoPhoto == true) View.GONE else View.VISIBLE
+    val flat = request?.let { it.isStereoPhoto || it.isFlatVideo } == true
+    turnButton?.visibility = if (flat) View.GONE else View.VISIBLE
   }
 
   /** Runs [action] on a click on [view], then restarts a pending auto hide (see [restartPendingHide]). */
@@ -773,8 +848,8 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
       view.visibility = View.GONE
       return
     }
-    if (media.isStereoPhoto) {
-      // 3D or 2D (left eye): what the quad shows now
+    if (media.isStereoPhoto || media.isFlatVideo) {
+      // 3D or 2D (left eye): what the quad or the flat video layer shows now
       val key = if (stereo3d && stereoHasSecondEye) StereoComposer.LABEL_3D else StereoComposer.LABEL_2D
       view.text = StereoComposer.label(media.stereoLabels, key)
       view.visibility = View.VISIBLE
@@ -791,8 +866,8 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   private fun updateCoverageView() {
     val view = coverageView ?: return
     val media = request
-    // A stitched frame covers the full sphere, a spatial photo no sphere at all
-    if (media == null || media.isRawVideo || media.isStereoPhoto) {
+    // A stitched frame covers the full sphere, a spatial photo or a flat 3D media no sphere at all
+    if (media == null || media.isRawVideo || media.isStereoPhoto || media.isFlatVideo) {
       view.visibility = View.GONE
       return
     }
@@ -944,6 +1019,8 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
       centerSpheresOnHead(head.t)
       // A spatial photo shown before the first head pose goes in front of the user once it is known
       if (!stereoPlacedWithHead && stereoEyeSize != null && request?.isStereoPhoto == true) placeStereoQuad()
+      // A flat video too
+      if (!flatPlacedWithHead && request?.isFlatVideo == true) placeFlatVideo()
     }
     if (infoPlaced) return
     if (lastHeadPosition != null || ++framesWithoutHead > 180) {
@@ -1009,6 +1086,15 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
       toggleStereoPhotoMode(fromPanel)
       return
     }
+    if (media.isFlatVideo) {
+      // 3D, or the first eye for both
+      if (!stereoHasSecondEye) return
+      stereo3d = !stereo3d
+      applyFlatVideoShape()
+      updateStereoView()
+      showControlChange(fromPanel)
+      return
+    }
     stereoLayout = ImmersiveMedia.cycleStereoLayout(stereoLayout, step)
     val mode = stereoModeFor(stereoLayout)
     Log.i(TAG, "3D layout is now $stereoLayout (${if (media.isVideo) "video" else "photo"} stereo mode $mode)")
@@ -1029,7 +1115,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
    */
   private fun toggleCoverage() {
     val media = request ?: return
-    if (media.isRawVideo || media.isStereoPhoto) return
+    if (media.isRawVideo || media.isStereoPhoto || media.isFlatVideo) return
     coverage = ImmersiveMedia.toggleCoverage(coverage)
     Log.i(TAG, "field of view is now $coverage (${if (media.isVideo) "video" else "photo"})")
     if (media.isVideo) applyVideoShape() else showPhotoSphere()
@@ -1083,6 +1169,8 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     val isVideo = request?.isVideo == true
     // A spatial photo has no sphere to turn: the thumbstick sizes and places its quad instead
     val isStereoPhoto = request?.isStereoPhoto == true
+    // A flat 3D video has no sphere to turn either: the thumbstick brings its screen in front instead
+    val isFlatVideo = request?.isFlatVideo == true
     for (action in actions) {
       when (action) {
         ImmersiveControls.Action.CLOSE -> {
@@ -1092,9 +1180,17 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
         ImmersiveControls.Action.PREVIOUS -> navigate(-1, fromThumbstick = true)
         ImmersiveControls.Action.NEXT -> navigate(1, fromThumbstick = true)
         ImmersiveControls.Action.TURN_LEFT ->
-          if (isStereoPhoto) placeStereoQuad() else turnFromThumbstick(-SNAP_TURN_DEGREES)
+          when {
+            isStereoPhoto -> placeStereoQuad()
+            isFlatVideo -> placeFlatVideo()
+            else -> turnFromThumbstick(-SNAP_TURN_DEGREES)
+          }
         ImmersiveControls.Action.TURN_RIGHT ->
-          if (isStereoPhoto) placeStereoQuad() else turnFromThumbstick(SNAP_TURN_DEGREES)
+          when {
+            isStereoPhoto -> placeStereoQuad()
+            isFlatVideo -> placeFlatVideo()
+            else -> turnFromThumbstick(SNAP_TURN_DEGREES)
+          }
         ImmersiveControls.Action.STICK_UP ->
           when {
             isVideo -> seekFromThumbstick(1)
@@ -1138,14 +1234,6 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
    */
   private fun navigate(step: Int, fromThumbstick: Boolean = false) {
     if (closing || isFinishing) return
-    val shown = request
-    if (shown != null && shown.isStereoPhoto) {
-      // Flutter finds no spatial photo before or after this one yet: said rather than asked
-      val text = StereoComposer.label(shown.stereoLabels, StereoComposer.LABEL_NO_NAVIGATION)
-      Log.i(TAG, "no previous or next from a spatial photo (step $step)")
-      if (fromThumbstick && !infoVisible) showFeedback(text) else setStatus(text)
-      return
-    }
     if (pendingRequestId != null) {
       // Still looking: the feedback says so again rather than nothing happening
       if (fromThumbstick && !infoVisible) showFeedback(navigationStatus)
@@ -1218,6 +1306,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     fallbackUrl: String?,
     rawProjection: String?,
     stereoPair: String?,
+    flatFormat: String?,
   ): Boolean {
     if (closing || isFinishing || isDestroyed) {
       Log.i(TAG, "adjacent media for request $requestId refused, the viewer is closing")
@@ -1249,6 +1338,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
         fallbackUrl = fallbackUrl,
         rawProjection = rawProjection,
         stereoPairJson = stereoPair,
+        flatFormatWire = flatFormat,
       )
     // A thumbstick request with the panel still hidden: the feedback panel shows the title, the info panel stays away
     val quiet = navigationQuiet && !infoVisible
@@ -1767,10 +1857,10 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   }
 
   /**
-   * Shows [media], an Apple spatial photo, on the stereo quad: no sphere around (black), its file read whole (a few MB:
-   * the bridge or the server original, or the file on the headset), both eyes decoded (see [decodeStereo]) and set
-   * side by side on one texture. A pair that does not read, or a second eye that does not decode, shows the left eye
-   * in 2D.
+   * Shows [media], an Apple spatial photo or a flat 3D photo, on the stereo quad: no sphere around (black), its file
+   * read whole (a few MB: the bridge or the server original, or the file on the headset), both eyes decoded (see
+   * [decodeStereo] and [decodeFlat]) and set side by side on one texture. A pair that does not read, or a second eye
+   * that does not decode, shows the left eye in 2D.
    */
   private fun showStereoPhoto(media: MediaRequest) {
     stopVideo()
@@ -1796,7 +1886,12 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
           Log.i(TAG, "spatial photo: ${bytes.size} bytes")
           val holder = AtomicReference<StereoTexture?>()
           try {
-            decodeMutex.withLock { withContext(Dispatchers.Default) { holder.set(decodeStereo(bytes, spec)) } }
+            val flat = media.flatFormat
+            decodeMutex.withLock {
+              withContext(Dispatchers.Default) {
+                holder.set(if (flat != null) decodeFlat(bytes, flat) else decodeStereo(bytes, spec))
+              }
+            }
             ensureActive()
             val texture = holder.getAndSet(null) ?: throw IOException("this image cannot be read or decoded")
             applyStereoTexture(texture)
@@ -1882,6 +1977,62 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
       left.recycle()
       right?.recycle()
     }
+  }
+
+  /**
+   * Both eyes of a flat 3D photo of [bytes] packed as [format] on one texture, off the main thread: each eye cut from
+   * its half of the frame and drawn at the shape it is shown with (a squeezed eye stretched back), within the eye
+   * limits of the quad. An RGBD photo gets both eyes made from its color and its depth (see
+   * [FlatStereo.synthesizeEyes]). Null when the image does not decode.
+   */
+  private fun decodeFlat(bytes: ByteArray, format: FlatFormat): StereoTexture? {
+    val frame = ImmersiveMedia.decodeBytes(bytes) ?: return null
+    var left: Bitmap? = null
+    var right: Bitmap? = null
+    try {
+      val (leftRegion, rightRegion) = FlatStereo.eyes(format, frame.width, frame.height)
+      val aspect = FlatStereo.eyeAspect(format, frame.width, frame.height)
+      val (width, height) =
+        FlatStereo.eyeSize(
+          format,
+          leftRegion,
+          aspect,
+          StereoHeicDecoder.MAX_EYE_WIDTH,
+          StereoHeicDecoder.MAX_EYE_HEIGHT,
+        )
+      left = cutEye(frame, leftRegion, width, height)
+      right = cutEye(frame, rightRegion, width, height)
+      if (format == FlatFormat.RGBD) {
+        val color = IntArray(width * height)
+        val depth = IntArray(width * height)
+        left.getPixels(color, 0, width, 0, 0, width, height)
+        right.getPixels(depth, 0, width, 0, 0, width, height)
+        val (leftEye, rightEye) =
+          FlatStereo.synthesizeEyes(color, depth, width, height, maxDisparityPx = width * FlatStereo.RGBD_DISPARITY)
+        left.setPixels(leftEye, 0, width, 0, 0, width, height)
+        right.setPixels(rightEye, 0, width, 0, 0, width, height)
+      }
+      Log.i(TAG, "flat 3D photo $format: frame ${frame.width}x${frame.height}, eyes ${width}x$height")
+      val texture = StereoComposer.compose(left, right, StereoComposer.Crop(0, 0, width))
+      return StereoTexture(texture, width, height, hasSecondEye = true)
+    } finally {
+      frame.recycle()
+      left?.recycle()
+      right?.recycle()
+    }
+  }
+
+  /** The [region] of [frame] drawn on a new mutable bitmap of [width] x [height]. */
+  private fun cutEye(frame: Bitmap, region: FlatStereo.Region, width: Int, height: Int): Bitmap {
+    val eye = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    Canvas(eye)
+      .drawBitmap(
+        frame,
+        Rect(region.x, region.y, region.x + region.width, region.y + region.height),
+        Rect(0, 0, width, height),
+        Paint(Paint.FILTER_BITMAP_FLAG),
+      )
+    return eye
   }
 
   /**
@@ -2228,7 +2379,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
         playbackStats = PlaybackStatsLogger(TAG, lens?.streams.orEmpty()).also(it::addAnalyticsListener)
         // Each lens renderer gets its own Surface of the compositor, never the player's surface API
         lens?.bindRendererOutputs()
-        videoSurface?.let { surface -> attachVideoSurface(it, surface) }
+        activeVideoSurface()?.let { surface -> attachVideoSurface(it, surface) }
       }
     } catch (e: Exception) {
       Log.e(TAG, "player creation failed", e)
@@ -2540,6 +2691,14 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
         if (twoLens == null) revealVideo()
       }
 
+      override fun onVideoSizeChanged(videoSize: VideoSize) {
+        if (videoSize.width <= 0 || videoSize.height <= 0 || request?.isFlatVideo != true) return
+        // The display size of the frame: anamorphic videos store narrower pixels
+        val width = (videoSize.width * videoSize.pixelWidthHeightRatio).roundToInt()
+        flatVideoSize = width to videoSize.height
+        applyFlatVideoShape()
+      }
+
       override fun onTracksChanged(tracks: Tracks) {
         if (twoLens != null) checkLensDecoders(tracks) else selectedVideoFormat(tracks)?.let(::checkDecoderLimit)
       }
@@ -2693,6 +2852,63 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   private fun shownVideoCoverage(): ImmersiveSphereCoverage =
     if (request?.isRawVideo == true) ImmersiveSphereCoverage.FULL else coverage
 
+  /** The Surface the player draws on: the flat video layer for a flat 3D video, the sphere for any other video. */
+  private fun activeVideoSurface(): Surface? = if (request?.isFlatVideo == true) flatVideoSurface else videoSurface
+
+  /** Width and height in meters of the flat video layer, FLAT_SCREEN_ANGLE_DEG wide at the distance of the quad. */
+  private fun flatScreenSize(aspect: Float): Pair<Float, Float> {
+    val width = 2f * StereoComposer.DISTANCE_M * Math.tan(Math.toRadians(FLAT_SCREEN_ANGLE_DEG / 2.0)).toFloat()
+    return width to width / aspect
+  }
+
+  /**
+   * The stereo mode and the shape of the flat video layer for the flat 3D video shown: each eye its half of the frame
+   * in 3D, the first eye in 2D (see [FlatStereo.stereoModeFor]), at the shape of one eye once the player told the frame
+   * size, 16:9 until then. Nothing for any other media, nor before the panel exists (its setup calls this again).
+   */
+  private fun applyFlatVideoShape() {
+    val panel = flatVideoPanel ?: return
+    val media = request ?: return
+    val format = media.flatFormat
+    if (!media.isFlatVideo || format == null) return
+    val config = panel.panelShapeConfig
+    if (config == null) {
+      Log.w(TAG, "flat video panel without a shape config, $format not applied")
+      return
+    }
+    val mode = FlatStereo.stereoModeFor(format, stereo3d && stereoHasSecondEye)
+    val aspect = flatVideoSize?.let { (width, height) -> FlatStereo.eyeAspect(format, width, height) } ?: (16f / 9f)
+    val (width, height) = flatScreenSize(aspect)
+    if (config.stereoMode == mode && abs(config.width - width) < 1e-3f && abs(config.height - height) < 1e-3f) return
+    try {
+      config.stereoMode = mode
+      config.width = width
+      config.height = height
+      panel.reshape(config)
+      Log.i(TAG, "flat video layer is now $mode, ${width}x$height m (eye aspect $aspect)")
+    } catch (e: Exception) {
+      Log.e(TAG, "could not set the flat video layer to $mode, ${width}x$height m", e)
+    }
+  }
+
+  /**
+   * Puts the flat video layer in front of where the user looks, at the height of the eyes and the distance of the
+   * stereo quad, facing them. Before the first head pose, in front of the default eye position; [onFrame] places it
+   * again once the pose is known. The left thumbstick calls it too, to bring the screen back in front.
+   */
+  private fun placeFlatVideo() {
+    val entity = flatVideoEntity ?: return
+    val head = lastHeadPosition
+    val eyes = head ?: Vector3(0f, DEFAULT_EYE_HEIGHT, 0f)
+    val forward = lastHeadForward ?: Vector3(0f, 0f, 1f)
+    val flat = sqrt(forward.x * forward.x + forward.z * forward.z)
+    val direction = if (flat < 1e-3f) Vector3(0f, 0f, 1f) else Vector3(forward.x / flat, 0f, forward.z / flat)
+    val position = eyes + (direction * StereoComposer.DISTANCE_M)
+    position.y = eyes.y
+    entity.setComponent(Transform(Pose(position, Quaternion.lookRotation(direction))))
+    flatPlacedWithHead = head != null
+  }
+
   private fun showVideo(media: MediaRequest) {
     hideStereoQuad()
     resetSkyboxToIdle()
@@ -2701,6 +2917,16 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     // Hidden until the first frame of this video: the surface still holds the last frame of the previous one
     videoRevealed = false
     videoEntity?.setComponent(Visible(false))
+    flatVideoEntity?.setComponent(Visible(false))
+    if (media.isFlatVideo) {
+      // A new flat video starts in 3D, at 16:9 until the player tells its frame size, in front of the user
+      stereo3d = true
+      stereoHasSecondEye = media.flatFormat != FlatFormat.RGBD
+      flatVideoSize = null
+      applyFlatVideoShape()
+      placeFlatVideo()
+      updateStereoView()
+    }
     player?.stop()
     // playUrl decides again for this video whether it starts now or once the viewer is back in front
     playOnReturn = false
@@ -2710,10 +2936,13 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     applyVideoShape()
     videoFallbackTried = false
     setStatus(getString(R.string.immersive_loading))
-    if (ensurePlayer(media.url, media) == null) {
+    val videoPlayer = ensurePlayer(media.url, media)
+    if (videoPlayer == null) {
       showError(getString(R.string.immersive_error_video, "player"))
       return
     }
+    // A player kept from the previous video may draw on the other layer: a flat video on the flat one, else the sphere
+    if (twoLens == null) activeVideoSurface()?.let { attachVideoSurface(videoPlayer, it) }
     loadJob =
       scope.launch {
         val playback = fallbackFor(media.url)
@@ -2737,7 +2966,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   private fun revealVideo() {
     if (videoRevealed || request?.isVideo != true || currentVideoUrl == null) return
     videoRevealed = true
-    videoEntity?.setComponent(Visible(true))
+    (if (request?.isFlatVideo == true) flatVideoEntity else videoEntity)?.setComponent(Visible(true))
   }
 
   /** Where a fallback url starts: where the failed one stopped, or the start position it was given. */
@@ -2819,6 +3048,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     }
     videoRevealed = false
     videoEntity?.setComponent(Visible(false))
+    flatVideoEntity?.setComponent(Visible(false))
     updateProgress()
   }
 
@@ -2973,6 +3203,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     private const val EXTRA_RAW_PROJECTION = "app.alextran.immich.immersive.RAW_PROJECTION"
     /** The JSON of the two eyes of an Apple spatial photo, absent for any other media; put by ImmersiveApiImpl.open */
     internal const val EXTRA_STEREO_PAIR = "app.alextran.immich.immersive.STEREO_PAIR"
+    internal const val EXTRA_FLAT_FORMAT = "app.alextran.immich.immersive.FLAT_FORMAT"
     /** The media shown, in the saved state of a recreation, with the same keys as the extras of [intent]. */
     private const val STATE_REQUEST = "app.alextran.immich.immersive.REQUEST"
     /** The 3D or 2D choice and the angular width of the spatial photo shown, in the saved state of a recreation. */
@@ -3011,6 +3242,13 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
      */
     private const val VIDEO_PANEL_WIDTH_PX = 3840
     private const val VIDEO_PANEL_HEIGHT_PX = 1920
+
+    /** Surface of the flat video layer: the frame of a flat 3D video is scaled to it, the quad gives the shape back. */
+    private const val FLAT_VIDEO_PANEL_WIDTH_PX = 3840
+    private const val FLAT_VIDEO_PANEL_HEIGHT_PX = 2160
+
+    /** Angular width of the flat video layer, at the distance of the stereo quad: a large screen, still all in view. */
+    private const val FLAT_SCREEN_ANGLE_DEG = 60.0
 
     /** Refresh interval of the time bar while the panel is on screen. */
     private const val PROGRESS_INTERVAL_MS = 500L
@@ -3085,6 +3323,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
       fallbackUrl: String?,
       rawProjection: String?,
       stereoPair: String? = null,
+      flatFormat: String? = null,
     ): Boolean {
       val viewer = liveViewer
       if (viewer == null) {
@@ -3101,6 +3340,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
         fallbackUrl,
         rawProjection,
         stereoPair,
+        flatFormat,
       )
     }
 
@@ -3155,6 +3395,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
         putString(EXTRA_FALLBACK_URL, media.fallbackUrl)
         putString(EXTRA_RAW_PROJECTION, media.rawProjection)
         putString(EXTRA_STEREO_PAIR, media.stereoPairJson)
+        putString(EXTRA_FLAT_FORMAT, media.flatFormatWire)
       }
     }
 
@@ -3185,6 +3426,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
         fallbackUrl = extras.getString(EXTRA_FALLBACK_URL)?.takeIf { it.isNotBlank() },
         rawProjection = extras.getString(EXTRA_RAW_PROJECTION)?.takeIf { it.isNotBlank() },
         stereoPairJson = extras.getString(EXTRA_STEREO_PAIR)?.takeIf { it.isNotBlank() },
+        flatFormatWire = extras.getString(EXTRA_FLAT_FORMAT)?.takeIf { it.isNotBlank() },
       )
     }
 

@@ -327,7 +327,21 @@ void main() {
     }
 
     when(
-      () => immersiveApi.open(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()),
+      () => immersiveApi.open(
+        any(),
+        any(),
+        any(),
+        any(),
+        any(),
+        any(),
+        any(),
+        any(),
+        any(),
+        any(),
+        any(),
+        any(),
+        any(),
+      ),
     ).thenAnswer(openImmersive);
     previewRequests = [];
     previewXmp = null;
@@ -583,7 +597,21 @@ void main() {
       expect(find.text('panorama ${asset.id}'), findsOneWidget);
       verifyNever(() => sphericalVideoApi.open(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()));
       verifyNever(
-        () => immersiveApi.open(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()),
+        () => immersiveApi.open(
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+        ),
       );
     });
 
@@ -904,6 +932,7 @@ void main() {
           any(),
           captureAny(),
           any(),
+          any(),
         ),
       ).captured;
       expect(captured[0], ImmersiveStereoLayout.mono);
@@ -919,7 +948,21 @@ void main() {
 
       expect(find.text(unsupportedMessage), findsOneWidget);
       verifyNever(
-        () => immersiveApi.open(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()),
+        () => immersiveApi.open(
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+        ),
       );
     });
   });
@@ -963,6 +1006,7 @@ void main() {
           any(),
           any(),
           any(),
+          any(),
         ),
       ).called(1);
       expect(router.current.name, isNot(PanoramaViewerRoute.name), reason: 'the 2D panorama viewer is not used');
@@ -992,6 +1036,7 @@ void main() {
             captureAny(),
             captureAny(),
             captureAny(),
+            any(),
             any(),
             any(),
             any(),
@@ -1036,6 +1081,7 @@ void main() {
           any(),
           any(),
           any(),
+          any(),
         ),
       ).captured.single;
       expect(layout, ImmersiveStereoLayout.mono);
@@ -1059,6 +1105,7 @@ void main() {
           any(),
           any(),
           captureAny(),
+          any(),
           any(),
           any(),
           any(),
@@ -1123,6 +1170,7 @@ void main() {
             any(),
             any(),
             any(),
+            any(),
           ),
         ).captured;
         expect(captured, [layout, coverage], reason: asset.name);
@@ -1146,6 +1194,7 @@ void main() {
           captureAny(),
           any(),
           captureAny(),
+          any(),
           any(),
           any(),
           any(),
@@ -1187,6 +1236,7 @@ void main() {
             any(),
             any(),
             any(),
+            any(),
           ),
         ).called(1);
         verifyNever(() => sphericalVideoApi.open(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()));
@@ -1216,6 +1266,7 @@ void main() {
           any(),
           any(),
           any(),
+          any(),
         ),
       ).called(1);
     });
@@ -1234,6 +1285,7 @@ void main() {
           any(),
           true,
           asset.name,
+          any(),
           any(),
           any(),
           any(),
@@ -1284,6 +1336,7 @@ void main() {
             any(),
             any(),
             captureAny(),
+            any(),
             any(),
             any(),
             any(),
@@ -1348,7 +1401,21 @@ void main() {
       tester,
     ) async {
       when(
-        () => immersiveApi.open(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()),
+        () => immersiveApi.open(
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+        ),
       ).thenThrow(PlatformException(code: 'channel-error'));
       await pumpTopBar(
         tester,
@@ -1414,6 +1481,7 @@ void main() {
           any(),
           any(),
           any(),
+          any(),
         ),
       ).called(1);
       expect(file.uri.toString(), startsWith('file:///'));
@@ -1443,6 +1511,7 @@ void main() {
           captureAny(),
           any(),
           captureAny(),
+          any(),
           any(),
           any(),
           any(),
@@ -1506,6 +1575,7 @@ void main() {
             any(),
             any(),
             any(),
+            any(),
           ),
         ).captured;
         expect(captured, [ImmersiveStereoLayout.mono, coverage], reason: '$width x $height');
@@ -1540,6 +1610,7 @@ void main() {
           any(),
           false,
           transient.name,
+          any(),
           any(),
           any(),
           any(),
@@ -1593,6 +1664,7 @@ void main() {
           any(),
           any(),
           any(),
+          any(),
         ),
       ).captured.single;
       expect(startPosition, 12000);
@@ -1609,7 +1681,21 @@ void main() {
       // Stopped before the file is looked for, so that the immersive viewer starts where the video was
       expect(calls, ['suspend', 'resume at 0 paused']);
       verifyNever(
-        () => immersiveApi.open(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()),
+        () => immersiveApi.open(
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+        ),
       );
       expect(find.text('Could not open the immersive viewer'), findsOneWidget);
     });
@@ -1647,8 +1733,21 @@ void main() {
       await tester.pumpAndSettle();
 
       verify(
-        () =>
-            immersiveApi.open(any(), any(), false, asset.name, any(), any(), any(), any(), any(), any(), any(), any()),
+        () => immersiveApi.open(
+          any(),
+          any(),
+          false,
+          asset.name,
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+        ),
       ).called(1);
     });
 
@@ -1781,8 +1880,21 @@ void main() {
 
       expect(stored(), '["${asset.id}"]');
       verify(
-        () =>
-            immersiveApi.open(any(), any(), false, asset.name, any(), any(), any(), any(), any(), any(), any(), any()),
+        () => immersiveApi.open(
+          any(),
+          any(),
+          false,
+          asset.name,
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+        ),
       ).called(1);
       expect(router.current.name, isNot(PanoramaViewerRoute.name));
     });
@@ -2364,6 +2476,7 @@ void main() {
           captureAny(),
           any(),
           any(),
+          any(),
         ),
       ).captured;
       return (captured[0] as String, captured[1] as String?);
@@ -2661,6 +2774,7 @@ void main() {
           any(),
           any(),
           captureAny(),
+          any(),
         ),
       ).captured;
       // The original the pair was read from, not an edit of it
@@ -2682,6 +2796,78 @@ void main() {
       await pumpTopBar(tester, asset, horizonOs: true, extraOverrides: [spatial(asset, null)]);
 
       expect(view3dButton, findsNothing);
+    });
+  });
+
+  group('ViewerTopAppBar "View in 3D" button for flat 3D media', () {
+    final flatButton = find.byKey(const Key('flat_stereo_view_3d'));
+
+    testWidgets('opens a side by side photo on a flat screen in the immersive viewer of a Meta Quest', (tester) async {
+      final asset = owned(name: 'beach-da2-SBS.png');
+      await pumpTopBar(tester, asset, horizonOs: true);
+
+      expect(flatButton, findsOneWidget);
+
+      await tester.tap(flatButton);
+      await tester.pumpAndSettle();
+
+      final captured = verify(
+        () => immersiveApi.open(
+          any(),
+          any(),
+          captureAny(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          captureAny(),
+          captureAny(),
+        ),
+      ).captured;
+      expect(captured[0], isFalse, reason: 'a photo');
+      expect(captured[1], isNull, reason: 'no Apple spatial pair');
+      expect(captured[2], 'sbs');
+    });
+
+    testWidgets('opens an RGBD photo with its depth format', (tester) async {
+      final asset = owned(name: 'beach-da2_RGBD.png');
+      await pumpTopBar(tester, asset, horizonOs: true);
+
+      await tester.tap(flatButton);
+      await tester.pumpAndSettle();
+
+      final captured = verify(
+        () => immersiveApi.open(
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          any(),
+          captureAny(),
+        ),
+      ).captured;
+      expect(captured.single, 'rgbd');
+    });
+
+    testWidgets('is not shown on a phone', (tester) async {
+      await pumpTopBar(tester, owned(name: 'beach-da2-SBS.png'));
+      expect(flatButton, findsNothing);
+    });
+
+    testWidgets('is not shown for a regular photo on a Meta Quest', (tester) async {
+      await pumpTopBar(tester, owned(name: 'IMG_0003.JPG'), horizonOs: true);
+      expect(flatButton, findsNothing);
     });
   });
 }

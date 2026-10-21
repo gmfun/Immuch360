@@ -68,6 +68,7 @@ class _RecordingImmersiveApi extends ImmersiveApi {
     String? fallbackUrl,
     String? rawProjection,
     String? stereoPair,
+    String? flatFormat,
   ) async => opened.add((url: url, isVideo: isVideo, rawProjection: rawProjection, layout: stereoLayout));
 
   @override
@@ -81,6 +82,7 @@ class _RecordingImmersiveApi extends ImmersiveApi {
     String? fallbackUrl,
     String? rawProjection,
     String? stereoPair,
+    String? flatFormat,
   ) async {
     shown.add((url: url, isVideo: isVideo, rawProjection: rawProjection, layout: stereoLayout));
     return true;

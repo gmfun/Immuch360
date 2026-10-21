@@ -1,0 +1,89 @@
+name: Immuch360 Quest debug build
+
+# A debug APK of the Meta Quest flavour, with the tests of the immersive viewer, for a branch that changes it. Needs
+# no secret: the debug build is signed with the debug key of the runner. Triggered by a push to a quest/* branch, or
+# manually.
+
+on:
+  push:
+    branches: ['quest/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quest:
+    name: Immersive viewer tests and Quest debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install mise
+        uses: jdx/mise-action@v2
+        with:
+          install: false
+          cache: true
+
+      - name: Install toolchains (Flutter, Java, OpenAPI generator)
+        env:
+          MISE_YES: '1'
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+        run: |
+          mise install node java "npm:@openapitools/openapi-generator-cli"
+          cd mobile && mise install
+          mise exec -- flutter --version
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0 ndk;28.2.13676358'
+
+      - name: Same NDK for the build hooks and Gradle
+        run: |
+          ndk="$ANDROID_HOME/ndk/28.2.13676358"
+          test -x "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+          { echo "ANDROID_NDK_HOME=$ndk"; echo "ANDROID_NDK_ROOT=$ndk"; echo "ANDROID_NDK=$ndk"; } >> "$GITHUB_ENV"
+
+      - name: Flutter dependencies and code generation
+        env:
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+        run: |
+          mise //mobile:install:ci
+          mise //mobile:codegen
+
+      - name: Analyze
+        working-directory: mobile
+        run: mise exec -- flutter analyze lib test
+
+      - name: Flutter tests of the immersive viewer
+        working-directory: mobile
+        run: |
+          mise exec -- flutter test test/domain/models/flat_stereo_test.dart \
+            test/presentation/widgets/asset_viewer \
+            test/presentation/pages/network/network_photo_page_test.dart \
+            test/presentation/pages/network/network_video_page_test.dart
+
+      - name: Build the Quest debug APK
+        working-directory: mobile
+        env:
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+        run: |
+          mise exec -- flutter build apk --debug --flavor quest --target-platform android-arm64 \
+            --android-project-arg arm64only=true
+          ls -la build/app/outputs/flutter-apk/
+
+      - name: Kotlin tests of the immersive viewer
+        working-directory: mobile/android
+        env:
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+        run: mise exec -- ./gradlew :app:testQuestDebugUnitTest --tests 'app.alextran.immich.immersive.*'
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: immuch360-quest-debug
+          path: mobile/build/app/outputs/flutter-apk/*.apk

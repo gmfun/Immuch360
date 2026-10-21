@@ -79,6 +79,7 @@ class _RecordingImmersiveApi extends ImmersiveApi {
     String? fallbackUrl,
     String? rawProjection,
     String? stereoPair,
+    String? flatFormat,
   ) async => opened.add(url);
 
   @override
@@ -92,6 +93,7 @@ class _RecordingImmersiveApi extends ImmersiveApi {
     String? fallbackUrl,
     String? rawProjection,
     String? stereoPair,
+    String? flatFormat,
   ) async {
     shownFallbackUrls.add(fallbackUrl);
     shown.add((

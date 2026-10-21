@@ -100,18 +100,18 @@ class ImmersiveInputTest {
   @Test
   fun `the thumbstick never touches the info panel`() {
     for (visible in listOf(false, true)) {
-      assertEquals(listOf(Action.PREVIOUS), actions(controller = ButtonBits.ButtonThumbLL, panelVisible = visible))
-      assertEquals(listOf(Action.NEXT), actions(controller = ButtonBits.ButtonThumbLR, panelVisible = visible))
-      assertEquals(listOf(Action.TURN_LEFT), actions(controller = ButtonBits.ButtonThumbRL, panelVisible = visible))
-      assertEquals(listOf(Action.TURN_RIGHT), actions(controller = ButtonBits.ButtonThumbRR, panelVisible = visible))
+      assertEquals(listOf(Action.PREVIOUS), actions(controller = ButtonBits.ButtonThumbRL, panelVisible = visible))
+      assertEquals(listOf(Action.NEXT), actions(controller = ButtonBits.ButtonThumbRR, panelVisible = visible))
+      assertEquals(listOf(Action.TURN_LEFT), actions(controller = ButtonBits.ButtonThumbLL, panelVisible = visible))
+      assertEquals(listOf(Action.TURN_RIGHT), actions(controller = ButtonBits.ButtonThumbLR, panelVisible = visible))
       assertEquals(listOf(Action.STICK_UP), actions(controller = ButtonBits.ButtonThumbRU, panelVisible = visible))
       assertEquals(listOf(Action.STICK_DOWN), actions(controller = ButtonBits.ButtonThumbLD, panelVisible = visible))
     }
   }
 
   @Test
-  fun `the right thumbstick held left or right turns again after a delay, then at an interval`() {
-    val held = ButtonBits.ButtonThumbRR
+  fun `the left thumbstick held left or right turns again after a delay, then at an interval`() {
+    val held = ButtonBits.ButtonThumbLR
     assertEquals(0, edges.pressed(1, true, "CONTROLLER", 0, nowMs = 1000))
     assertEquals(held, edges.pressed(1, true, "CONTROLLER", held, nowMs = 1000))
     // Held, but not for long enough yet
@@ -129,7 +129,9 @@ class ImmersiveInputTest {
 
   @Test
   fun `the other thumbstick directions and the buttons do not repeat`() {
-    for (bit in listOf(ButtonBits.ButtonThumbLL, ButtonBits.ButtonThumbRU, ButtonBits.ButtonA)) {
+    // The right thumbstick left or right changes the media: held, it must not skip through the album
+    val bits = listOf(ButtonBits.ButtonThumbRR, ButtonBits.ButtonThumbRL, ButtonBits.ButtonThumbRU, ButtonBits.ButtonA)
+    for (bit in bits) {
       val own = ControllerEdges()
       own.pressed(2, true, "CONTROLLER", 0, nowMs = 0)
       assertEquals(bit, own.pressed(2, true, "CONTROLLER", bit, nowMs = 0))
@@ -139,7 +141,7 @@ class ImmersiveInputTest {
 
   @Test
   fun `a turn held across a controller reset does not repeat`() {
-    val held = ButtonBits.ButtonThumbRL
+    val held = ButtonBits.ButtonThumbLL
     edges.pressed(1, true, "CONTROLLER", 0, nowMs = 0)
     assertEquals(held, edges.pressed(1, true, "CONTROLLER", held, nowMs = 0))
     assertEquals(0, edges.pressed(1, false, "CONTROLLER", held, nowMs = 100))
@@ -187,7 +189,7 @@ class ImmersiveInputTest {
   @Test
   fun `controller buttons the SDK files under a hand still work`() {
     assertEquals(listOf(Action.CLOSE), actions(hand = ButtonBits.ButtonB))
-    assertEquals(listOf(Action.TURN_RIGHT), actions(hand = ButtonBits.ButtonThumbRR))
+    assertEquals(listOf(Action.NEXT), actions(hand = ButtonBits.ButtonThumbRR))
     assertEquals(
       listOf(Action.STICK_UP, Action.SHOW_PANEL),
       actions(hand = ButtonBits.ButtonThumbRU or ButtonBits.ButtonA),
@@ -201,7 +203,7 @@ class ImmersiveInputTest {
       actions(controller = ButtonBits.ButtonThumbRD or ButtonBits.ButtonX, panelVisible = true),
     )
     assertEquals(
-      listOf(Action.TURN_RIGHT, Action.TOGGLE_PANEL, Action.PLAY_PAUSE),
+      listOf(Action.NEXT, Action.TOGGLE_PANEL, Action.PLAY_PAUSE),
       actions(
         controller = ButtonBits.ButtonThumbRR or ButtonBits.ButtonX or ButtonBits.ButtonTriggerL,
         panelVisible = true,
