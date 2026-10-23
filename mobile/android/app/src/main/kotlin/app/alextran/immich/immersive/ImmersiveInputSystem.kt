@@ -5,11 +5,14 @@ import android.util.Log
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Query
 import com.meta.spatial.core.SystemBase
+import com.meta.spatial.core.Vector3
 import com.meta.spatial.runtime.ButtonBits
 import com.meta.spatial.toolkit.AvatarAttachment
 import com.meta.spatial.toolkit.Controller
 import com.meta.spatial.toolkit.ControllerType
 import com.meta.spatial.toolkit.Transform
+import com.meta.spatial.toolkit.getAbsoluteTransform
+import kotlin.math.max
 
 /**
  * Polls the controllers every frame, like the ControllerListenerSystem of Meta's SplatSample, and
@@ -30,7 +33,11 @@ internal class ImmersiveInputSystem(
   interface Listener {
     fun onButtonsPressed(controllerBits: Int, handBits: Int)
 
-    fun onFrame(head: Pose?)
+    /**
+     * Every frame, with the head pose, and [gripSpread] the distance in meters between the two controllers (or hands)
+     * while both hold their grip, null otherwise: the stretch that resizes a flat screen, see [ScreenStretch].
+     */
+    fun onFrame(head: Pose?, gripSpread: Float?)
   }
 
   private val headQuery =
@@ -42,6 +49,7 @@ internal class ImmersiveInputSystem(
   override fun execute() {
     var controllerBits = 0
     var handBits = 0
+    val grips = ArrayList<Vector3>(2)
     try {
       val controllers = Query.where { has(Controller.id) }.eval().filter { it.isLocal() }
       val present = HashSet<Long>()
@@ -50,6 +58,13 @@ internal class ImmersiveInputSystem(
         val type = controller.type
         val active = controller.isActive
         present.add(entity.id)
+        if ((controller.buttonState and GRIPS) != 0) {
+          try {
+            grips += getAbsoluteTransform(entity).t
+          } catch (e: Exception) {
+            Log.w(TAG, "no pose for the grip of controller ${entity.id}", e)
+          }
+        }
         // Inactive controllers are polled too: a press is a press even when the SDK reports the
         // controller asleep, which it may keep doing after a wake up
         val down = edges.pressed(entity.id, active, type.name, controller.buttonState, now())
@@ -76,11 +91,53 @@ internal class ImmersiveInputSystem(
         Log.e(TAG, "head query failed", e)
         null
       }
+    val gripSpread = if (grips.size == 2) (grips[0] - grips[1]).length() else null
     try {
-      listener.onFrame(head)
+      listener.onFrame(head, gripSpread)
     } catch (e: Exception) {
       Log.e(TAG, "frame handling failed", e)
     }
+  }
+
+  private companion object {
+    val GRIPS = ButtonBits.ButtonSqueezeL or ButtonBits.ButtonSqueezeR
+  }
+}
+
+/**
+ * The two handed stretch of a flat screen: both grips held, the hands pulled apart or brought together scale the
+ * screen by the same ratio, from the width it had when the second grip went down. Pure, unit tested.
+ */
+internal class ScreenStretch {
+  private var startSpread = 0f
+  private var startWidth = 0f
+
+  /** Both grips are held and the stretch has started. */
+  var active = false
+    private set
+
+  /**
+   * The width in meters the screen should have for the hands [spread] meters apart, null while both grips are not
+   * held (null [spread]) and on the frame the stretch starts. [width] is the width of the screen now, read only then.
+   */
+  fun update(spread: Float?, width: Float): Float? {
+    if (spread == null) {
+      active = false
+      return null
+    }
+    if (!active) {
+      if (spread < MIN_SPREAD_M || width <= 0f) return null
+      active = true
+      startSpread = spread
+      startWidth = width
+      return null
+    }
+    return startWidth * max(spread, MIN_SPREAD_M) / startSpread
+  }
+
+  companion object {
+    /** Hands closer than this (one hand over the other) neither start a stretch nor shrink the screen to nothing. */
+    const val MIN_SPREAD_M = 0.05f
   }
 }
 
@@ -209,9 +266,12 @@ internal class ControllerEdges(private val log: (String) -> Unit = {}) {
  *   without turning the head, the right stick up or down seeks a video, sizes a flat screen or turns a photo, the left
  *   one up or down moves a flat screen farther or nearer (on any other media it does what the right one does); the
  *   viewer shows all of them on its small feedback line, never by bringing the info panel up;
- * - A, X, grip or menu on a controller, and the menu gesture of a hand, show or hide the info panel; an index pinch
- *   (A or X of a hand) only shows a hidden panel, since a pinch on a panel button must not hide the panel it clicks;
- * - the trigger plays or pauses a video while the panel is hidden (on the panel it clicks a button).
+ * - A, X or menu on a controller, and the menu gesture of a hand, show or hide the info panel; the grip too, except on
+ *   a flat screen ([screenGrabbable]), where it grabs the screen to move it; an index pinch (A or X of a hand) only
+ *   shows a hidden panel, since a pinch on a panel button must not hide the panel it clicks;
+ * - the trigger plays or pauses a video while the panel is hidden (on the panel it clicks a button); the trigger or a
+ *   pinch pointed away from the panel shown ([pressOutsidePanel]) hides it, and does nothing else;
+ * - while the user holds a flat screen ([screenHeld]), either thumbstick up or down makes it larger or smaller.
  * Bits that only a controller has (B, Y, the thumbsticks) count as controller bits even when the SDK files them under
  * a hand: after the controllers wake up, the SDK may still take them for hands for a while.
  */
@@ -228,18 +288,36 @@ internal object ImmersiveControls {
     LEFT_STICK_DOWN,
     TOGGLE_PANEL,
     SHOW_PANEL,
+    HIDE_PANEL,
     PLAY_PAUSE,
+    SCREEN_LARGER,
+    SCREEN_SMALLER,
   }
 
-  /** The actions for [controllerBits] and [handBits] pressed on the same update, in the order to run them. */
-  fun actionsFor(controllerBits: Int, handBits: Int, panelVisible: Boolean): List<Action> {
+  /**
+   * The actions for [controllerBits] and [handBits] pressed on the same update, in the order to run them.
+   * [pressOutsidePanel]: the panel is shown and no pointer is on it. [screenGrabbable]: the media is on a flat screen
+   * the grip grabs. [screenHeld]: the user holds that screen now.
+   */
+  fun actionsFor(
+    controllerBits: Int,
+    handBits: Int,
+    panelVisible: Boolean,
+    pressOutsidePanel: Boolean = false,
+    screenGrabbable: Boolean = false,
+    screenHeld: Boolean = false,
+  ): List<Action> {
     val controllerOnly =
       ButtonBits.ButtonB or ButtonBits.ButtonY or ControllerEdges.LEFT_STICK or ControllerEdges.RIGHT_STICK
     val controller = controllerBits or (handBits and controllerOnly)
     val hand = handBits and controllerOnly.inv()
     if ((controller and (ButtonBits.ButtonB or ButtonBits.ButtonY)) != 0) return listOf(Action.CLOSE)
     val actions = mutableListOf<Action>()
+    val stickUp = ButtonBits.ButtonThumbRU or ButtonBits.ButtonThumbLU
+    val stickDown = ButtonBits.ButtonThumbRD or ButtonBits.ButtonThumbLD
     when {
+      screenHeld && (controller and stickUp) != 0 -> actions += Action.SCREEN_LARGER
+      screenHeld && (controller and stickDown) != 0 -> actions += Action.SCREEN_SMALLER
       (controller and ButtonBits.ButtonThumbRL) != 0 -> actions += Action.PREVIOUS
       (controller and ButtonBits.ButtonThumbRR) != 0 -> actions += Action.NEXT
       (controller and ButtonBits.ButtonThumbLL) != 0 -> actions += Action.TURN_LEFT
@@ -249,19 +327,25 @@ internal object ImmersiveControls {
       (controller and ButtonBits.ButtonThumbLU) != 0 -> actions += Action.LEFT_STICK_UP
       (controller and ButtonBits.ButtonThumbLD) != 0 -> actions += Action.LEFT_STICK_DOWN
     }
+    val grips = ButtonBits.ButtonSqueezeL or ButtonBits.ButtonSqueezeR
     val panelToggle =
-      ButtonBits.ButtonA or ButtonBits.ButtonX or ButtonBits.ButtonMenu or ButtonBits.ButtonSqueezeL or
-        ButtonBits.ButtonSqueezeR
+      ButtonBits.ButtonA or ButtonBits.ButtonX or ButtonBits.ButtonMenu or (if (screenGrabbable) 0 else grips)
+    val pinch = ButtonBits.ButtonA or ButtonBits.ButtonX
+    val triggers = ButtonBits.ButtonTriggerL or ButtonBits.ButtonTriggerR
     var visibleAfter = panelVisible
     if ((controller and panelToggle) != 0 || (hand and ButtonBits.ButtonMenu) != 0) {
       actions += Action.TOGGLE_PANEL
       visibleAfter = !panelVisible
-    } else if (!panelVisible && (hand and (ButtonBits.ButtonA or ButtonBits.ButtonX)) != 0) {
+    } else if (!panelVisible && (hand and pinch) != 0) {
       actions += Action.SHOW_PANEL
       visibleAfter = true
+    } else if (panelVisible && pressOutsidePanel && ((controller and triggers) != 0 || (hand and pinch) != 0)) {
+      // A click away from the panel dismisses it, as a click outside a menu does; the press does nothing else
+      actions += Action.HIDE_PANEL
+      return actions
     }
     // With the panel shown, the trigger clicks its buttons instead
-    if (!visibleAfter && (controller and (ButtonBits.ButtonTriggerL or ButtonBits.ButtonTriggerR)) != 0) {
+    if (!visibleAfter && (controller and triggers) != 0) {
       actions += Action.PLAY_PAUSE
     }
     return actions

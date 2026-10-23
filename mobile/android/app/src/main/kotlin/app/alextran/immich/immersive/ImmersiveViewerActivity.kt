@@ -58,6 +58,8 @@ import com.meta.spatial.core.Vector3
 import com.meta.spatial.runtime.AddressMode
 import com.meta.spatial.runtime.EquirectLayerConfig
 import com.meta.spatial.runtime.Filter
+import com.meta.spatial.runtime.HitInfo
+import com.meta.spatial.runtime.InputListener
 import com.meta.spatial.runtime.LayerFilters
 import com.meta.spatial.runtime.MaterialSidedness
 import com.meta.spatial.runtime.PanelSceneObject
@@ -66,6 +68,7 @@ import com.meta.spatial.runtime.ReferenceSpace
 import com.meta.spatial.runtime.SamplerConfig
 import com.meta.spatial.runtime.SceneMaterial
 import com.meta.spatial.runtime.SceneMesh
+import com.meta.spatial.runtime.SceneObject
 import com.meta.spatial.runtime.SceneTexture
 import com.meta.spatial.runtime.SessionState
 import com.meta.spatial.runtime.StereoMode
@@ -73,6 +76,8 @@ import com.meta.spatial.toolkit.AppSystemActivity
 import com.meta.spatial.toolkit.DpDisplayOptions
 import com.meta.spatial.toolkit.Equirect180ShapeOptions
 import com.meta.spatial.toolkit.Equirect360ShapeOptions
+import com.meta.spatial.toolkit.Grabbable
+import com.meta.spatial.toolkit.GrabbableType
 import com.meta.spatial.toolkit.LayoutXMLPanelRegistration
 import com.meta.spatial.toolkit.Material
 import com.meta.spatial.toolkit.MediaPanelRenderOptions
@@ -91,6 +96,7 @@ import com.meta.spatial.toolkit.UIPanelSettings
 import com.meta.spatial.toolkit.VideoSurfacePanelRegistration
 import com.meta.spatial.toolkit.Visible
 import com.meta.spatial.toolkit.createPanelEntity
+import com.meta.spatial.toolkit.getAbsoluteTransform
 import com.meta.spatial.vr.LocomotionSystem
 import com.meta.spatial.vr.VRFeature
 import java.io.File
@@ -134,9 +140,11 @@ private const val RAW_PROJECTION_TAG = "RawProjection"
  * client certificate). The activity is exported like in HybridSample, so it only accepts intents that
  * carry the launch token of the last intent built by [intent]: anything else shows nothing.
  *
- * Controllers: trigger plays or pauses a video while the info panel is hidden (on the panel it clicks),
- * B or Y goes back to the 2D app, A, X, grip or menu show or hide the info panel. The right thumbstick left or
- * right opens the previous or the next media of the app without leaving the immersive view: Flutter
+ * Controllers: trigger plays or pauses a video while the info panel is hidden (on the panel it clicks, away from it
+ * it hides the panel), B or Y goes back to the 2D app, A, X, grip or menu show or hide the info panel, which also has
+ * a close button. On a flat screen the grip grabs the screen instead, to move it: held, the thumbstick up or down
+ * resizes it, and both grips held resize it with the spread of the hands (see [ScreenStretch]). The right thumbstick
+ * left or right opens the previous or the next media of the app without leaving the immersive view: Flutter
  * picks it and the viewer shows it in place (see [navigate]); the left one turns the view. Thumbstick up
  * or down seeks 10 seconds forward or back in a video, and turns a photo by 90 degrees (logged, to find
  * the right SKYBOX_YAW_DEGREES).
@@ -351,6 +359,38 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
    */
   private var screenEyes: Vector3? = null
   private var screenDirection: Vector3? = null
+
+  /**
+   * The user moved the flat screen with the grip (see [adoptScreenPose]): the next flat media go where it is, on the
+   * same line, instead of in front of the gaze, until the left thumbstick brings the screen in front again.
+   */
+  private var screenPlacedByUser = false
+
+  /** The flat screen entity the user holds with the grip now, see [trackScreenGrab]. */
+  private var heldScreen: Entity? = null
+
+  /** The two handed stretch of the flat screen, see [stretchScreen]. */
+  private val screenStretch = ScreenStretch()
+
+  /** When the stretch last resized the screen (uptime ms), and the size it still has to apply, see [stretchScreen]. */
+  private var stretchAppliedAt = 0L
+  private var stretchPendingAngle: Float? = null
+
+  /**
+   * The pointers (controllers or hands) on the info panel now, by entity id, from its hover events (see
+   * [watchInfoHover]), and when the last one left it (uptime ms): a trigger or a pinch with none on it hides it.
+   */
+  private val infoHovers = HashSet<Long>()
+  private var infoHoverStoppedAt = 0L
+
+  /**
+   * The panel reported a pointer once: only then does a press away from it hide it, so that a panel whose hover
+   * events never come keeps working as before rather than hiding under every click.
+   */
+  private var infoHoverSeen = false
+
+  /** The hide of a press away from the panel, held back OUTSIDE_HIDE_DELAY_MS in case the panel reports a click. */
+  private var outsideHideJob: Job? = null
 
   /** The color and the depth of the RGBD photo on the quad, null for any other media; see [changeRgbd]. */
   private var rgbdPixels: RgbdPixels? = null
@@ -627,16 +667,19 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
       createHalfSphere()
       createStereoQuad()
       videoEntity = Entity.create(Panel(R.id.immersive_video_panel), Transform(), Visible(false))
+      // The flat screens: the grip grabs them (the SDK's GrabbableSystem), turning around the vertical only
       flatVideoEntity =
         Entity.create(
           Panel(R.id.immersive_flat_video_panel),
           Transform(Pose(Vector3(0f, DEFAULT_EYE_HEIGHT, StereoComposer.DISTANCE_M), Quaternion(0f, 0f, 0f))),
+          Grabbable(true, GrabbableType.PIVOT_Y),
           Visible(false),
         )
       photoLayerEntity =
         Entity.create(
           Panel(R.id.immersive_photo_panel),
           Transform(Pose(Vector3(0f, DEFAULT_EYE_HEIGHT, StereoComposer.DISTANCE_M), Quaternion(0f, 0f, 0f))),
+          Grabbable(true, GrabbableType.PIVOT_Y),
           Visible(false),
         )
       infoEntity =
@@ -645,6 +688,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
           Transform(Pose(Vector3(0f, 1.1f, INFO_DISTANCE), Quaternion(0f, 0f, 0f))),
           Visible(false),
         )
+      infoEntity?.let(::watchInfoHover)
       feedbackEntity =
         Entity.createPanelEntity(
           R.id.immersive_feedback_panel,
@@ -878,6 +922,11 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     previousButton = root.findViewById(R.id.immersive_previous)
     nextButton = root.findViewById(R.id.immersive_next)
     root.findViewById<Button>(R.id.immersive_back)?.setOnClickListener { close() }
+    // The close button hides the panel, as A or X do
+    root.findViewById<View>(R.id.immersive_hide)?.setOnClickListener {
+      cancelInfoHide()
+      setInfoVisible(false, reposition = false)
+    }
     // A click from the controller ray or a hand pinch: the panel is on screen, it stays where it is, and a pending
     // auto hide starts again so that the panel does not vanish while the user is using it
     onPanelClick(playPauseButton) { togglePlayPause() }
@@ -1055,6 +1104,9 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   }
 
   private fun setInfoVisible(visible: Boolean, reposition: Boolean) {
+    cancelOutsideHide()
+    // A hidden panel reports no hover stop: the pointers on it are gone with it
+    if (!visible) infoHovers.clear()
     if (!visible) {
       // A hidden panel has nothing left to hide, and the drag of its time bar is over even if the bar never reports
       // the end of the touch: a drag left on would hold every later auto hide back
@@ -1068,6 +1120,67 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     panel.setComponent(Visible(visible && infoPlaced))
     infoVisible = visible
     updateProgressTicker()
+  }
+
+  /**
+   * Follows the pointers on the info panel through the hover events of its scene object, so that a trigger or a pinch
+   * away from it hides it (see [pressOutsidePanel]); a click down on it also cancels such a hide still held back.
+   */
+  private fun watchInfoHover(entity: Entity) {
+    val future = systemManager.findSystem<SceneObjectSystem>().getSceneObject(entity)
+    if (future == null) {
+      Log.w(TAG, "info panel scene object not available, a press away from it will not hide it")
+      return
+    }
+    future.thenAccept { sceneObject ->
+      runOnUiThread {
+        sceneObject.addInputListener(
+          object : InputListener {
+            override fun onHoverStart(receiver: SceneObject, sourceOfInput: Entity) {
+              infoHovers += sourceOfInput.id
+              infoHoverSeen = true
+              cancelOutsideHide()
+            }
+
+            override fun onHoverStop(receiver: SceneObject, sourceOfInput: Entity) {
+              infoHovers -= sourceOfInput.id
+              infoHoverStoppedAt = SystemClock.uptimeMillis()
+            }
+
+            override fun onClickDown(receiver: SceneObject, hitInfo: HitInfo, sourceOfInput: Entity) {
+              cancelOutsideHide()
+            }
+          }
+        )
+        Log.i(TAG, "info panel hover listener added")
+      }
+    }
+  }
+
+  /**
+   * The panel is shown and no pointer is on it, nor left it within HOVER_GRACE_MS: the press may end a hover just
+   * before it reaches this activity. False until the panel reported a pointer once, see [infoHoverSeen].
+   */
+  private fun pressOutsidePanel(): Boolean =
+    infoVisible && infoHoverSeen && infoHovers.isEmpty() &&
+      SystemClock.uptimeMillis() - infoHoverStoppedAt > HOVER_GRACE_MS
+
+  /** A press away from the panel: it hides OUTSIDE_HIDE_DELAY_MS later, unless the panel reports a pointer first. */
+  private fun hideFromOutsidePress() {
+    cancelOutsideHide()
+    outsideHideJob =
+      scope.launch {
+        delay(OUTSIDE_HIDE_DELAY_MS)
+        outsideHideJob = null
+        if (infoHovers.isNotEmpty()) return@launch
+        Log.i(TAG, "press away from the info panel: hidden")
+        setInfoVisible(false, reposition = false)
+      }
+  }
+
+  private fun cancelOutsideHide() {
+    outsideHideJob?.cancel()
+    outsideHideJob = null
   }
 
   /** Puts the info panel in front of the user, like SplatSample.positionPanelInFrontOfUser. */
@@ -1131,7 +1244,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   // ---------------------------------------------------------------------------------------------
   // Frame and input
 
-  override fun onFrame(head: Pose?) {
+  override fun onFrame(head: Pose?, gripSpread: Float?) {
     if (head != null && (head.t.x != 0f || head.t.y != 0f || head.t.z != 0f)) {
       lastHeadPosition = Vector3(head.t.x, head.t.y, head.t.z)
       lastHeadForward = head.forward()
@@ -1141,6 +1254,8 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
       // A flat video too
       if (!flatPlacedWithHead && request?.isFlatVideo == true) placeFlatVideo()
     }
+    trackScreenGrab()
+    stretchScreen(gripSpread)
     if (infoPlaced) return
     if (lastHeadPosition != null || ++framesWithoutHead > 180) {
       if (lastHeadPosition == null) Log.w(TAG, "no head pose after 180 frames, default info panel position")
@@ -1277,7 +1392,15 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     val panel = if (infoVisible) "shown" else "hidden"
     val controller = Integer.toHexString(controllerBits)
     Log.d(TAG, "buttons pressed: controller 0x$controller, hand 0x${Integer.toHexString(handBits)}, panel $panel")
-    val actions = ImmersiveControls.actionsFor(controllerBits, handBits, infoVisible)
+    val actions =
+      ImmersiveControls.actionsFor(
+        controllerBits,
+        handBits,
+        infoVisible,
+        pressOutsidePanel = pressOutsidePanel(),
+        screenGrabbable = currentScreenAngle() != null,
+        screenHeld = heldScreen != null,
+      )
     if (!focused) {
       Log.w(TAG, "button press while the session was not reported focused: taken as focused (resumed=$resumed)")
       focused = true
@@ -1300,26 +1423,26 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
         ImmersiveControls.Action.NEXT -> navigate(1, fromThumbstick = true)
         ImmersiveControls.Action.TURN_LEFT ->
           when {
-            isStereoPhoto -> placeStereoQuad()
-            isFlatVideo -> placeFlatVideo()
+            isStereoPhoto -> placeStereoQuad(recenter = true)
+            isFlatVideo -> placeFlatVideo(recenter = true)
             else -> turnFromThumbstick(-SNAP_TURN_DEGREES)
           }
         ImmersiveControls.Action.TURN_RIGHT ->
           when {
-            isStereoPhoto -> placeStereoQuad()
-            isFlatVideo -> placeFlatVideo()
+            isStereoPhoto -> placeStereoQuad(recenter = true)
+            isFlatVideo -> placeFlatVideo(recenter = true)
             else -> turnFromThumbstick(SNAP_TURN_DEGREES)
           }
         ImmersiveControls.Action.STICK_UP ->
           when {
             isVideo -> seekFromThumbstick(1)
-            isStereoPhoto -> resizeStereoQuad(1)
+            isStereoPhoto -> changeScreenSize(1)
             else -> turnFromThumbstick(YAW_STEP_DEGREES)
           }
         ImmersiveControls.Action.STICK_DOWN ->
           when {
             isVideo -> seekFromThumbstick(-1)
-            isStereoPhoto -> resizeStereoQuad(-1)
+            isStereoPhoto -> changeScreenSize(-1)
             else -> turnFromThumbstick(-YAW_STEP_DEGREES)
           }
         // Pushed away, the flat screen goes farther; pulled back, nearer
@@ -1341,7 +1464,10 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
           setInfoVisible(!infoVisible, reposition = true)
         }
         ImmersiveControls.Action.SHOW_PANEL -> setInfoVisible(true, reposition = true)
+        ImmersiveControls.Action.HIDE_PANEL -> hideFromOutsidePress()
         ImmersiveControls.Action.PLAY_PAUSE -> togglePlayPause()
+        ImmersiveControls.Action.SCREEN_LARGER -> changeScreenSize(1)
+        ImmersiveControls.Action.SCREEN_SMALLER -> changeScreenSize(-1)
       }
     }
   }
@@ -1962,10 +2088,12 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     val entity =
       Entity.create(
         listOf(
-          Mesh(Uri.parse(STEREO_QUAD_MESH), hittable = MeshCollision.NoCollision),
+          // Hit by the rays, for the grip to grab it like the photo layer
+          Mesh(Uri.parse(STEREO_QUAD_MESH), hittable = MeshCollision.LineTest),
           Material().apply { unlit = true },
           Transform(Pose(Vector3(0f, DEFAULT_EYE_HEIGHT, StereoComposer.DISTANCE_M), Quaternion(0f, 0f, 0f))),
           Scale(Vector3(1f, 1f, 1f)),
+          Grabbable(true, GrabbableType.PIVOT_Y),
           Visible(false),
         ),
       )
@@ -2477,10 +2605,12 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   /**
    * Puts the quad 2 m in front of where the user looks, at the height of the eyes, facing them the way the info panel
    * does (see StereoComposer.quadRotation): the horizontal gaze. Before the first head pose, in front of the default
-   * eye position; [onFrame] places it again once the pose is known.
+   * eye position; [onFrame] places it again once the pose is known. A screen the user moved ([screenPlacedByUser])
+   * stays where it is instead, unless [recenter] (the left thumbstick) asks for it in front again.
    */
-  private fun placeStereoQuad() {
-    val pose = screenPose(recenter = true)
+  private fun placeStereoQuad(recenter: Boolean = !screenPlacedByUser) {
+    if (recenter) screenPlacedByUser = false
+    val pose = screenPose(recenter)
     stereoQuadEntity?.setComponent(Transform(pose))
     photoLayerEntity?.setComponent(Transform(pose))
     stereoPlacedWithHead = lastHeadPosition != null
@@ -2518,31 +2648,160 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     applyPhotoLayerShape()
   }
 
-  /** The thumbstick up ([step] 1) or down (-1) on a spatial photo: a wider or narrower quad, where it is. */
-  private fun resizeStereoQuad(step: Int) {
-    stereoAngleDeg = StereoComposer.nextAngle(stereoAngleDeg, step)
-    chosenScreenAngleDeg = stereoAngleDeg
-    applyStereoScale()
-    Log.i(TAG, "stereo quad is now $stereoAngleDeg degrees wide")
+  /**
+   * The Size buttons, the thumbstick up or down on a 3D photo or on a screen held: a larger ([step] 1) or smaller (-1)
+   * flat screen, where it is, kept for the photos or the flat videos shown after this one.
+   */
+  private fun changeScreenSize(step: Int) {
+    val angle = currentScreenAngle() ?: return
+    setScreenAngle(StereoComposer.nextAngle(angle, step))
+  }
+
+  /** The angular width of the flat screen shown, null when no flat screen is (or its photo is not decoded yet). */
+  private fun currentScreenAngle(): Float? {
+    val media = request ?: return null
+    return when {
+      media.isFlatVideo -> flatVideoAngleDeg
+      media.isStereoPhoto && stereoEyeSize != null -> stereoAngleDeg
+      else -> null
+    }
+  }
+
+  /** The flat screen [angleDeg] wide, where it is, told on the panel or the feedback line. */
+  private fun setScreenAngle(angleDeg: Float) {
+    val media = request ?: return
+    when {
+      media.isFlatVideo -> {
+        flatVideoAngleDeg = angleDeg
+        applyFlatVideoShape()
+      }
+      media.isStereoPhoto && stereoEyeSize != null -> {
+        stereoAngleDeg = angleDeg
+        chosenScreenAngleDeg = angleDeg
+        applyStereoScale()
+      }
+      else -> return
+    }
+    Log.i(TAG, "flat screen is now $angleDeg degrees wide")
     updateScreenControls()
-    reportScreenChange(sizeText(stereoAngleDeg))
+    reportScreenChange(sizeText(angleDeg))
   }
 
   /**
-   * The Size buttons: a larger ([step] 1) or smaller (-1) flat screen, where it is, kept for the photos or the flat
-   * videos shown after this one.
+   * Both grips held on a flat screen: its width follows the spread of the hands (see [ScreenStretch]), to the degree.
+   * A new width reshapes the compositor layer, so at most one every STRETCH_INTERVAL_MS; the last one is applied when
+   * a grip is let go.
    */
-  private fun changeScreenSize(step: Int) {
-    val media = request ?: return
-    when {
-      media.isStereoPhoto -> resizeStereoQuad(step)
-      media.isFlatVideo -> {
-        flatVideoAngleDeg = StereoComposer.nextAngle(flatVideoAngleDeg, step)
-        applyFlatVideoShape()
-        Log.i(TAG, "flat video layer is now $flatVideoAngleDeg degrees wide")
-        updateScreenControls()
-        reportScreenChange(sizeText(flatVideoAngleDeg))
+  private fun stretchScreen(gripSpread: Float?) {
+    val angle = currentScreenAngle()
+    val width = angle?.let { StereoComposer.screenWidth(it, screenDistanceM) } ?: 0f
+    val target = screenStretch.update(if (angle != null) gripSpread else null, width)
+    if (target == null || angle == null) {
+      stretchPendingAngle?.let {
+        stretchPendingAngle = null
+        if (angle != null) setScreenAngle(it)
       }
+      return
+    }
+    val wanted = StereoComposer.angleForWidth(target, screenDistanceM).roundToInt().toFloat()
+    if (abs(wanted - angle) < 1f) {
+      stretchPendingAngle = null
+      return
+    }
+    val now = SystemClock.uptimeMillis()
+    if (now - stretchAppliedAt < STRETCH_INTERVAL_MS) {
+      stretchPendingAngle = wanted
+      return
+    }
+    stretchAppliedAt = now
+    stretchPendingAngle = null
+    setScreenAngle(wanted)
+  }
+
+  /**
+   * Follows the grip on the flat screen: [heldScreen] is the screen entity the SDK's GrabbableSystem moves now, and
+   * once it lets go, the screen takes its new place (see [adoptScreenPose]).
+   */
+  private fun trackScreenGrab() {
+    val screens = flatScreenEntities()
+    val held = screens.firstOrNull(::isGrabbed)
+    val previous = heldScreen
+    // A photo is on two entities at the same place, the layer and the quad: the one not grabbed follows the other
+    if (held != null && screens.size > 1) {
+      try {
+        val pose = held.getComponent<Transform>().transform
+        for (other in screens) if (other != held) other.setComponent(Transform(pose))
+      } catch (e: Exception) {
+        Log.w(TAG, "could not move the other entity of the photo", e)
+      }
+    }
+    if (held == previous) return
+    heldScreen = held
+    if (held != null) {
+      Log.i(TAG, "flat screen grabbed")
+    } else if (previous != null) {
+      adoptScreenPose(previous)
+    }
+  }
+
+  /** The entities that show the flat media now: the flat video layer, or the photo layer and the quad of a photo. */
+  private fun flatScreenEntities(): List<Entity> {
+    val media = request ?: return emptyList()
+    return when {
+      media.isFlatVideo -> listOfNotNull(flatVideoEntity)
+      media.isStereoPhoto -> listOfNotNull(photoLayerEntity, stereoQuadEntity)
+      else -> emptyList()
+    }
+  }
+
+  private fun isGrabbed(entity: Entity): Boolean =
+    try {
+      entity.getComponent<Grabbable>().isGrabbed
+    } catch (e: Exception) {
+      false
+    }
+
+  /**
+   * The screen [entity] the user let go: its place becomes the line the screen is on (the eyes, its direction and
+   * height, its distance within the Distance range), it keeps its size in meters, it faces the eyes again, and the
+   * other entity of a photo (quad or layer) follows. The next flat media go there too, see [screenPlacedByUser].
+   */
+  private fun adoptScreenPose(entity: Entity) {
+    val position =
+      try {
+        getAbsoluteTransform(entity).t
+      } catch (e: Exception) {
+        Log.w(TAG, "no pose for the flat screen let go", e)
+        return
+      }
+    val head = lastHeadPosition ?: screenEyes ?: return
+    val dx = position.x - head.x
+    val dz = position.z - head.z
+    val flat = sqrt(dx * dx + dz * dz)
+    if (flat < 0.1f) return
+    val distance = flat.coerceIn(StereoComposer.DISTANCES_M.first(), StereoComposer.DISTANCES_M.last())
+    stereoAngleDeg = StereoComposer.angleAtDistance(stereoAngleDeg, screenDistanceM, distance)
+    flatVideoAngleDeg = StereoComposer.angleAtDistance(flatVideoAngleDeg, screenDistanceM, distance)
+    if (request?.isStereoPhoto == true) chosenScreenAngleDeg = stereoAngleDeg
+    screenDistanceM = distance
+    screenEyes = Vector3(head.x, position.y, head.z)
+    screenDirection = Vector3(dx / flat, 0f, dz / flat)
+    screenPlacedByUser = true
+    moveScreen()
+    Log.i(TAG, "flat screen moved by the user to $position, $distance m away")
+    updateScreenControls()
+  }
+
+  /** The flat screen shown, put on its line at [screenDistanceM] (see [screenPose]), its shape for that distance. */
+  private fun moveScreen() {
+    val pose = screenPose(recenter = false)
+    if (request?.isFlatVideo == true) {
+      flatVideoEntity?.setComponent(Transform(pose))
+      applyFlatVideoShape()
+    } else {
+      stereoQuadEntity?.setComponent(Transform(pose))
+      photoLayerEntity?.setComponent(Transform(pose))
+      applyStereoScale()
     }
   }
 
@@ -2560,15 +2819,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
       flatVideoAngleDeg = StereoComposer.angleAtDistance(flatVideoAngleDeg, screenDistanceM, distance)
       if (media.isStereoPhoto) chosenScreenAngleDeg = stereoAngleDeg
       screenDistanceM = distance
-      val pose = screenPose(recenter = false)
-      if (media.isFlatVideo) {
-        flatVideoEntity?.setComponent(Transform(pose))
-        applyFlatVideoShape()
-      } else {
-        stereoQuadEntity?.setComponent(Transform(pose))
-        photoLayerEntity?.setComponent(Transform(pose))
-        applyStereoScale()
-      }
+      moveScreen()
       Log.i(TAG, "flat screen is now $distance m away")
       updateScreenControls()
     }
@@ -2593,13 +2844,7 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
    */
   private fun updateScreenControls() {
     val row = screenRow ?: return
-    val media = request
-    val angle =
-      when {
-        media?.isFlatVideo == true -> flatVideoAngleDeg
-        media?.isStereoPhoto == true && stereoEyeSize != null -> stereoAngleDeg
-        else -> null
-      }
+    val angle = currentScreenAngle()
     if (angle == null) {
       row.visibility = View.GONE
       return
@@ -3366,11 +3611,13 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
   /**
    * Puts the flat video layer in front of where the user looks, at the height of the eyes and the distance of the
    * stereo quad, facing them. Before the first head pose, in front of the default eye position; [onFrame] places it
-   * again once the pose is known. The left thumbstick calls it too, to bring the screen back in front.
+   * again once the pose is known. The left thumbstick calls it too ([recenter]), to bring the screen back in front; a
+   * screen the user moved ([screenPlacedByUser]) otherwise stays where it is.
    */
-  private fun placeFlatVideo() {
+  private fun placeFlatVideo(recenter: Boolean = !screenPlacedByUser) {
     val entity = flatVideoEntity ?: return
-    entity.setComponent(Transform(screenPose(recenter = true)))
+    if (recenter) screenPlacedByUser = false
+    entity.setComponent(Transform(screenPose(recenter)))
     flatPlacedWithHead = lastHeadPosition != null
   }
 
@@ -3679,6 +3926,16 @@ class ImmersiveViewerActivity : AppSystemActivity(), ImmersiveInputSystem.Listen
     private const val ORIGINAL_PREFIX = "immersive_original_"
     private const val INFO_DISTANCE = 1.3f
     private const val INFO_AUTO_HIDE_MS = 4000L
+
+    /**
+     * A press away from the info panel hides it this much later, unless the panel reports a pointer or a click
+     * meanwhile; a pointer that left the panel up to HOVER_GRACE_MS before the press still counts as on it.
+     */
+    private const val OUTSIDE_HIDE_DELAY_MS = 150L
+    private const val HOVER_GRACE_MS = 250L
+
+    /** The two handed stretch resizes the flat screen at most this often: each new size reshapes its layer. */
+    private const val STRETCH_INTERVAL_MS = 100L
     private const val DECODER_WARNING_HIDE_MS = 10000L
 
     /**

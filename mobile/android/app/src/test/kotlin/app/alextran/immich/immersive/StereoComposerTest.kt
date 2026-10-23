@@ -91,6 +91,15 @@ class StereoComposerTest {
   }
 
   @Test
+  fun `the angle of a screen of a given width is the inverse of its width, within bounds`() {
+    for (angle in listOf(10f, 48f, 90f, 120f)) {
+      assertEquals(angle, StereoComposer.angleForWidth(StereoComposer.screenWidth(angle, 1.5f), 1.5f), 1e-3f)
+    }
+    assertEquals(StereoComposer.MIN_ANGLE_DEG, StereoComposer.angleForWidth(0.01f, 2f))
+    assertEquals(StereoComposer.MAX_ANGLE_DEG, StereoComposer.angleForWidth(50f, 2f))
+  }
+
+  @Test
   fun `distances read without trailing zeros`() {
     assertEquals("2", StereoComposer.meters(2f))
     assertEquals("1.5", StereoComposer.meters(1.5f))

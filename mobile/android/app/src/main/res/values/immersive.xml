@@ -18,7 +18,8 @@
   <string name="immersive_back">Back</string>
   <string name="immersive_play">Play</string>
   <string name="immersive_pause">Pause</string>
-  <string name="immersive_hint">B or Y: back to the app. Trigger: play or pause. A, X or grip: show or hide this panel. Right thumbstick left or right: previous or next media; up or down: 10 seconds forward or back in a video, a larger or smaller flat screen, or turn a photo by 90 degrees. Left thumbstick left or right: turn the view, hold it to keep turning, or bring a flat screen back in front; up or down: a flat screen farther or nearer.</string>
+  <string name="immersive_hint">B or Y: back to the app. Trigger: play or pause; away from this panel, hide it. A or X: show or hide this panel. Right thumbstick: previous or next; up or down: 10 seconds in a video or turn a photo. Left thumbstick: turn the view, or bring a flat screen in front. Flat screen: grip to move it; while holding, thumbstick up or down or both grips apart to resize.</string>
+  <string name="immersive_hide_panel">Hide the controls</string>
   <string name="immersive_previous">Previous</string>
   <string name="immersive_next">Next</string>
   <string name="immersive_turn">Turn</string>

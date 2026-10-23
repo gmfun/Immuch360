@@ -3,6 +3,8 @@ package app.alextran.immich.immersive
 import app.alextran.immich.immersive.ImmersiveControls.Action
 import com.meta.spatial.runtime.ButtonBits
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -10,8 +12,14 @@ class ImmersiveInputTest {
   private val log = mutableListOf<String>()
   private val edges = ControllerEdges { log += it }
 
-  private fun actions(controller: Int = 0, hand: Int = 0, panelVisible: Boolean = false): List<Action> =
-    ImmersiveControls.actionsFor(controller, hand, panelVisible)
+  private fun actions(
+    controller: Int = 0,
+    hand: Int = 0,
+    panelVisible: Boolean = false,
+    outside: Boolean = false,
+    grabbable: Boolean = false,
+    held: Boolean = false,
+  ): List<Action> = ImmersiveControls.actionsFor(controller, hand, panelVisible, outside, grabbable, held)
 
   // Edges
 
@@ -170,6 +178,73 @@ class ImmersiveInputTest {
       assertEquals(listOf(Action.TOGGLE_PANEL), actions(controller = bit, panelVisible = false))
       assertEquals(listOf(Action.TOGGLE_PANEL), actions(controller = bit, panelVisible = true))
     }
+  }
+
+  @Test
+  fun `on a flat screen the grip grabs it and leaves the panel alone`() {
+    for (bit in listOf(ButtonBits.ButtonSqueezeL, ButtonBits.ButtonSqueezeR)) {
+      assertEquals(emptyList<Action>(), actions(controller = bit, panelVisible = false, grabbable = true))
+      assertEquals(emptyList<Action>(), actions(controller = bit, panelVisible = true, grabbable = true))
+    }
+    assertEquals(listOf(Action.TOGGLE_PANEL), actions(controller = ButtonBits.ButtonA, grabbable = true))
+  }
+
+  @Test
+  fun `a trigger or a pinch away from the panel hides it and does nothing else`() {
+    for (trigger in listOf(ButtonBits.ButtonTriggerL, ButtonBits.ButtonTriggerR)) {
+      assertEquals(listOf(Action.HIDE_PANEL), actions(controller = trigger, panelVisible = true, outside = true))
+      // On the panel it clicks a button
+      assertEquals(emptyList<Action>(), actions(controller = trigger, panelVisible = true, outside = false))
+    }
+    assertEquals(listOf(Action.HIDE_PANEL), actions(hand = ButtonBits.ButtonA, panelVisible = true, outside = true))
+    assertEquals(listOf(Action.HIDE_PANEL), actions(hand = ButtonBits.ButtonX, panelVisible = true, outside = true))
+    assertEquals(emptyList<Action>(), actions(hand = ButtonBits.ButtonA, panelVisible = true, outside = false))
+    // A button that toggles the panel keeps doing it
+    assertEquals(
+      listOf(Action.TOGGLE_PANEL, Action.PLAY_PAUSE),
+      actions(controller = ButtonBits.ButtonA or ButtonBits.ButtonTriggerR, panelVisible = true, outside = true),
+    )
+  }
+
+  @Test
+  fun `while a flat screen is held the thumbsticks up or down resize it`() {
+    for (up in listOf(ButtonBits.ButtonThumbRU, ButtonBits.ButtonThumbLU)) {
+      assertEquals(listOf(Action.SCREEN_LARGER), actions(controller = up, grabbable = true, held = true))
+    }
+    for (down in listOf(ButtonBits.ButtonThumbRD, ButtonBits.ButtonThumbLD)) {
+      assertEquals(listOf(Action.SCREEN_SMALLER), actions(controller = down, grabbable = true, held = true))
+    }
+    // Not held: as before
+    assertEquals(listOf(Action.STICK_UP), actions(controller = ButtonBits.ButtonThumbRU, grabbable = true))
+    assertEquals(listOf(Action.NEXT), actions(controller = ButtonBits.ButtonThumbRR, grabbable = true, held = true))
+  }
+
+  // Two handed stretch
+
+  @Test
+  fun `the stretch scales the screen by the ratio of the hands spread`() {
+    val stretch = ScreenStretch()
+    assertNull(stretch.update(null, 2f))
+    // The second grip goes down: the start
+    assertNull(stretch.update(0.4f, 2f))
+    assertTrue(stretch.active)
+    // The width read at the start counts, not the one passed later
+    assertEquals(4f, stretch.update(0.8f, 3f)!!, 1e-4f)
+    assertEquals(1f, stretch.update(0.2f, 3f)!!, 1e-4f)
+    // A grip let go ends it, the next one starts from the width then
+    assertNull(stretch.update(null, 1f))
+    assertFalse(stretch.active)
+    assertNull(stretch.update(0.5f, 1f))
+    assertEquals(2f, stretch.update(1f, 0f)!!, 1e-4f)
+  }
+
+  @Test
+  fun `hands one over the other neither start a stretch nor shrink the screen to nothing`() {
+    val stretch = ScreenStretch()
+    assertNull(stretch.update(0.01f, 2f))
+    assertFalse(stretch.active)
+    assertNull(stretch.update(0.5f, 2f))
+    assertEquals(2f * ScreenStretch.MIN_SPREAD_M / 0.5f, stretch.update(0f, 2f)!!, 1e-4f)
   }
 
   @Test

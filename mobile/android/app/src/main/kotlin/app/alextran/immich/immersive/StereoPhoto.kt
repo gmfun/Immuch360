@@ -319,6 +319,10 @@ internal object StereoComposer {
   fun screenWidth(angleDeg: Float, distance: Float): Float =
     2f * distance * tan(Math.toRadians(angleDeg / 2.0)).toFloat()
 
+  /** The angular width of a screen [width] meters wide at [distance], the inverse of [screenWidth], within bounds. */
+  fun angleForWidth(width: Float, distance: Float): Float =
+    Math.toDegrees(2 * atan(width / (2.0 * distance))).toFloat().coerceIn(MIN_ANGLE_DEG, MAX_ANGLE_DEG)
+
   /** A distance as the Distance label shows it: "2", "1.5", "0.75". */
   fun meters(distance: Float): String {
     val whole = distance.roundToInt()
